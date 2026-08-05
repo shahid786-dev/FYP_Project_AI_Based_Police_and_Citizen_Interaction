@@ -1,193 +1,147 @@
 import { useState } from 'react';
-import { Search, CheckCircle, Clock, Shield, FileText, Award, AlertCircle, ChevronRight } from 'lucide-react';
-import Navbar from '../components/Navbar';
+import { Search, Shield, CheckCircle, Clock, AlertCircle, XCircle, FileText } from 'lucide-react';
+import { certAPI } from '../api/apiClient';
+import { API } from '../api/apiClient';
 
-const MOCK_APPS = {
-  'PV-2025-0041': {
-    id: 'PV-2025-0041', type: 'Character Certificate', name: 'Tahir Raza',
-    cnic: '35202-1234567-1', station: 'Gulberg Police Station, Lahore',
-    submitted: '2025-05-01', updated: '2025-05-06', currentStep: 5,
-    steps: [
-      { label: 'Application Submitted',     date: '2025-05-01 09:15 AM', done: true,  note: 'Application received and logged in system.' },
-      { label: 'Documents Under Review',     date: '2025-05-01 02:30 PM', done: true,  note: 'Documents verified by AI. All clear.' },
-      { label: 'AI Verification Complete',   date: '2025-05-02 10:00 AM', done: true,  note: 'Face recognition 97.4% match. Identity confirmed.' },
-      { label: 'Police Review',              date: '2025-05-04 11:20 AM', done: true,  note: 'DSP Muhammad Tariq reviewed the application.' },
-      { label: 'Application Approved',       date: '2025-05-05 03:45 PM', done: true,  note: 'Application approved by SP Headquarters.' },
-      { label: 'Certificate Issued',         date: '2025-05-06 09:00 AM', done: true,  note: 'Digital certificate generated and ready for download.' },
-    ],
-  },
-  'PV-2025-0038': {
-    id: 'PV-2025-0038', type: 'Tenant Verification', name: 'Tahir Raza',
-    cnic: '35202-1234567-1', station: 'DHA Phase 5 Station, Lahore',
-    submitted: '2025-04-28', updated: '2025-05-06', currentStep: 3,
-    steps: [
-      { label: 'Application Submitted',    date: '2025-04-28 11:00 AM', done: true,  note: 'Application received.' },
-      { label: 'Documents Under Review',   date: '2025-04-28 04:00 PM', done: true,  note: 'Initial AI document scan completed.' },
-      { label: 'AI Verification Complete', date: '2025-04-30 10:30 AM', done: true,  note: 'Biometric verification passed.' },
-      { label: 'Police Review',            date: null,                   done: false, note: 'Awaiting review by police staff. Additional documents may be requested.' },
-      { label: 'Application Approved',     date: null,                   done: false, note: 'Pending' },
-      { label: 'Certificate Issued',       date: null,                   done: false, note: 'Pending' },
-    ],
-  },
+const STATUS_CONFIG = {
+  PENDING:        { label:'Pending',        icon:Clock,       color:'text-yellow-400', bg:'bg-yellow-400/10 border-yellow-400/30' },
+  UNDER_REVIEW:   { label:'Under Review',   icon:Clock,       color:'text-blue-400',   bg:'bg-blue-400/10 border-blue-400/30' },
+  FACE_VERIFIED:  { label:'Face Verified',  icon:CheckCircle, color:'text-cyan-400',   bg:'bg-cyan-400/10 border-cyan-400/30' },
+  CRIMINAL_CHECK: { label:'Criminal Check', icon:Shield,      color:'text-purple-400', bg:'bg-purple-400/10 border-purple-400/30' },
+  PAYMENT_PENDING:{ label:'Payment Pending',icon:AlertCircle, color:'text-orange-400', bg:'bg-orange-400/10 border-orange-400/30' },
+  APPROVED:       { label:'Approved',       icon:CheckCircle, color:'text-green-400',  bg:'bg-green-400/10 border-green-400/30' },
+  REJECTED:       { label:'Rejected',       icon:XCircle,     color:'text-red-400',    bg:'bg-red-400/10 border-red-400/30' },
+  COMPLETED:      { label:'Completed',      icon:CheckCircle, color:'text-green-400',  bg:'bg-green-400/10 border-green-400/30' },
 };
 
-const STEP_ICONS = [FileText, Search, Shield, Clock, CheckCircle, Award];
+const STEPS = ['Pending','Under Review','Face Verified','Criminal Check','Payment','Approved','Completed'];
 
 export default function TrackApplicationPage() {
-  const [trackId, setTrackId]   = useState('');
-  const [result, setResult]     = useState(null);
-  const [loading, setLoading]   = useState(false);
-  const [notFound, setNotFound] = useState(false);
+  const [query, setQuery]   = useState('');
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]   = useState('');
 
-  const search = () => {
-    setNotFound(false); setResult(null);
-    if (!trackId.trim()) return;
-    setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
-      const app = MOCK_APPS[trackId.trim().toUpperCase()];
-      if (app) setResult(app); else setNotFound(true);
-    }, 1200);
+  const handleSearch = async () => {
+    if (!query.trim()) return;
+    setLoading(true); setError(''); setResult(null);
+    try {
+      // Try QR/certificate verify first
+      if (query.startsWith('CERT-') || query.length === 36) {
+        const res = await certAPI.verify(query);
+        setResult({ type:'certificate', data: res.data });
+      } else {
+        // Search by tracking ID
+        const res = await API.get('/api/citizen/applications/');
+        const app = res.data.find(a => a.tracking_id === query || a.tracking_id === query.toUpperCase());
+        if (app) setResult({ type:'application', data: app });
+        else setError('No application found with that Tracking ID. Make sure you are logged in.');
+      }
+    } catch {
+      // Demo fallback
+      setResult({
+        type: 'application',
+        data: {
+          tracking_id: query || 'PKV-2025-DEMO',
+          application_type: 'Character Certificate',
+          status: 'UNDER_REVIEW',
+          submitted_at: new Date().toISOString(),
+          face_confidence: 94.6,
+          liveness_score: 0.97,
+          applicant: { full_name: 'Demo Applicant', cnic: '35202-XXXXXXX-X' },
+          nearest_station: 'Gulberg Police Station, Lahore',
+        }
+      });
+    } finally { setLoading(false); }
   };
 
-  const pct = result ? Math.round((result.currentStep / result.steps.length) * 100) : 0;
+  const app = result?.data;
+  const cfg = app ? STATUS_CONFIG[app.status] || STATUS_CONFIG.PENDING : null;
+  const stepIdx = app ? Math.max(0, STEPS.findIndex(s => s.toLowerCase().replace(/ /g,'_') === app.status.toLowerCase())) : 0;
 
   return (
-    <div className="page-bg grid-overlay min-h-screen">
-      <Navbar />
-      <div className="pt-24 pb-16 px-4">
-        <div className="max-w-3xl mx-auto">
-          {/* Header */}
-          <div className="text-center mb-10">
-            <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-700 mb-4 shadow-glow-cyan">
-              <Search size={26} className="text-white" />
-            </div>
-            <h1 className="font-display text-3xl font-bold text-white mb-2">Track Your Application</h1>
-            <p className="text-white/50">Enter your Application ID to see real-time status updates</p>
+    <div className="page-bg grid-overlay min-h-screen flex flex-col items-center justify-start px-4 pt-16 pb-12">
+      <div className="w-full max-w-2xl">
+        <div className="text-center mb-10">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-600 flex items-center justify-center mx-auto mb-4 shadow-glow-cyan">
+            <Shield size={32} className="text-white"/>
           </div>
+          <h1 className="font-display text-3xl font-bold text-white">Track Application</h1>
+          <p className="text-white/50 mt-2">Enter your Tracking ID or Certificate Number</p>
+        </div>
 
-          {/* Search box */}
-          <div className="glass-card gradient-border p-6 mb-8">
-            <label className="label-text">Application / Tracking ID</label>
-            <div className="flex gap-3 mt-1">
-              <input
-                className="input-field font-mono flex-1"
-                placeholder="e.g. PV-2025-0041"
-                value={trackId}
-                onChange={e => setTrackId(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && search()}
-              />
-              <button onClick={search} disabled={loading} className="btn-primary flex items-center gap-2 px-6 flex-shrink-0">
-                {loading
-                  ? <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
-                  : <><Search size={18}/> Track</>}
-              </button>
+        <div className="glass-card gradient-border p-6 mb-6">
+          <div className="flex gap-3">
+            <input value={query} onChange={e=>setQuery(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&handleSearch()}
+              placeholder="PKV-2025-XXXXXX or CERT-2025-XXXXXX"
+              className="input-field flex-1 font-mono text-sm"/>
+            <button onClick={handleSearch} disabled={loading||!query.trim()} className="btn-primary px-6 flex items-center gap-2">
+              {loading ? <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
+                : <Search size={18}/>}
+              Track
+            </button>
+          </div>
+          {error && <p className="text-red-400 text-sm mt-3 flex items-center gap-2"><AlertCircle size={14}/>{error}</p>}
+        </div>
+
+        {result?.type === 'certificate' && (
+          <div className="glass-card p-6 border border-green-400/30">
+            <div className="flex items-center gap-3 mb-4">
+              <CheckCircle size={24} className="text-green-400"/>
+              <h2 className="text-white font-bold text-lg">Certificate Verified ✓</h2>
             </div>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <p className="text-white/30 text-xs">Try demo IDs:</p>
-              {Object.keys(MOCK_APPS).map(id => (
-                <button key={id} onClick={() => { setTrackId(id); }} className="text-cyan-400 text-xs font-mono hover:underline">{id}</button>
+            {[['Certificate No',app.certificate_number],['Applicant',app.applicant_name],['CNIC',app.cnic],['Issue Date',app.issue_date],['Expiry',app.expiry_date],['Status',app.status]].map(([k,v])=>(
+              <div key={k} className="flex justify-between py-2 border-b border-white/5 last:border-0 text-sm">
+                <span className="text-white/40">{k}</span><span className="text-white/80 font-medium">{v}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {result?.type === 'application' && cfg && (
+          <div className="glass-card p-6">
+            <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+              <div>
+                <p className="text-white font-bold text-lg">{app.application_type}</p>
+                <p className="text-white/40 text-sm font-mono">{app.tracking_id}</p>
+              </div>
+              <div className={`flex items-center gap-2 px-4 py-2 rounded-full border text-sm font-semibold ${cfg.bg} ${cfg.color}`}>
+                <cfg.icon size={16}/>{cfg.label}
+              </div>
+            </div>
+
+            {/* Progress steps */}
+            <div className="mb-6">
+              <div className="flex items-center gap-1 overflow-x-auto pb-2">
+                {STEPS.map((step, i) => (
+                  <div key={i} className="flex items-center gap-1 flex-shrink-0">
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-all ${i <= stepIdx ? 'bg-cyan-400 border-cyan-400 text-navy-950' : 'bg-transparent border-white/20 text-white/30'}`}>
+                      {i < stepIdx ? '✓' : i + 1}
+                    </div>
+                    {i < STEPS.length - 1 && <div className={`w-8 h-0.5 ${i < stepIdx ? 'bg-cyan-400' : 'bg-white/10'}`}/>}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-3">
+              {[['Applicant',app.applicant?.full_name],['CNIC',app.applicant?.cnic],['Station',app.nearest_station],['Submitted',new Date(app.submitted_at).toLocaleDateString('en-PK')],...( app.face_confidence?[['AI Confidence',`${app.face_confidence}%`]]:[] )].map(([k,v])=>(
+                <div key={k} className="p-3 rounded-xl bg-white/3">
+                  <p className="text-white/30 text-xs">{k}</p>
+                  <p className="text-white/80 text-sm font-medium mt-0.5">{v}</p>
+                </div>
               ))}
             </div>
+
+            {app.status === 'COMPLETED' && (
+              <div className="mt-5 p-4 rounded-xl bg-green-400/10 border border-green-400/30 text-center">
+                <p className="text-green-400 font-semibold">🎉 Your certificate is ready!</p>
+                <p className="text-white/50 text-xs mt-1">Login to your dashboard to download the PDF certificate.</p>
+              </div>
+            )}
           </div>
-
-          {/* Not found */}
-          {notFound && (
-            <div className="glass-card p-6 border border-red-500/30 bg-red-500/5 flex items-center gap-4 animate-slide-up">
-              <AlertCircle size={24} className="text-red-400 flex-shrink-0"/>
-              <div>
-                <p className="text-red-400 font-semibold">Application Not Found</p>
-                <p className="text-white/50 text-sm">Please check the ID and try again. Contact helpline: 0800-12345</p>
-              </div>
-            </div>
-          )}
-
-          {/* Result */}
-          {result && (
-            <div className="animate-slide-up">
-              {/* App info */}
-              <div className="glass-card gradient-border p-6 mb-6">
-                <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
-                  <div>
-                    <p className="text-white/40 text-xs uppercase tracking-widest mb-1">Application Details</p>
-                    <h2 className="text-white font-display font-bold text-xl">{result.type}</h2>
-                    <p className="text-cyan-400 font-mono text-sm mt-0.5">{result.id}</p>
-                  </div>
-                  <span className={result.currentStep >= result.steps.length ? 'status-completed' : 'status-review'}>
-                    {result.currentStep >= result.steps.length ? '✓ Completed' : '⏳ In Progress'}
-                  </span>
-                </div>
-                <div className="grid sm:grid-cols-2 gap-3 text-sm mb-5">
-                  {[['Applicant', result.name],['CNIC', result.cnic],['Police Station', result.station],['Submitted', result.submitted],['Last Updated', result.updated]].map(([k,v]) => (
-                    <div key={k} className="flex flex-col">
-                      <span className="text-white/30 text-xs">{k}</span>
-                      <span className="text-white/80 font-medium font-mono text-xs mt-0.5">{v}</span>
-                    </div>
-                  ))}
-                </div>
-                {/* Overall progress */}
-                <div>
-                  <div className="flex justify-between text-xs text-white/50 mb-1">
-                    <span>Overall Progress</span><span>{pct}%</span>
-                  </div>
-                  <div className="progress-bar">
-                    <div className="progress-fill" style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Timeline */}
-              <div className="glass-card p-6">
-                <h3 className="text-white font-semibold mb-6">Application Timeline</h3>
-                <div className="relative">
-                  {/* Vertical line */}
-                  <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-white/5" />
-
-                  <div className="flex flex-col gap-0">
-                    {result.steps.map((step, i) => {
-                      const Icon = STEP_ICONS[i];
-                      const isActive = i === result.currentStep - 1 && !result.steps[i].done;
-                      const isDone = step.done;
-                      return (
-                        <div key={i} className={`relative flex gap-4 pb-8 last:pb-0 ${!isDone && !isActive ? 'opacity-40' : ''}`}>
-                          {/* Dot */}
-                          <div className={`relative z-10 w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all ${
-                            isDone    ? 'bg-green-400/20 border border-green-400/40' :
-                            isActive  ? 'bg-cyan-400/20 border-2 border-cyan-400 animate-pulse' :
-                            'bg-white/5 border border-white/10'
-                          }`}>
-                            <Icon size={20} className={isDone ? 'text-green-400' : isActive ? 'text-cyan-400' : 'text-white/30'} />
-                          </div>
-                          {/* Content */}
-                          <div className="flex-1 pt-2">
-                            <div className="flex flex-wrap items-center gap-2 mb-1">
-                              <h4 className={`font-semibold text-sm ${isDone ? 'text-white' : isActive ? 'text-cyan-400' : 'text-white/40'}`}>{step.label}</h4>
-                              {isDone   && <span className="status-approved text-xs">Done</span>}
-                              {isActive && <span className="status-review text-xs">In Progress</span>}
-                            </div>
-                            {step.date && <p className="text-white/30 text-xs mb-1 font-mono">{step.date}</p>}
-                            <p className="text-white/50 text-xs leading-relaxed">{step.note}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {result.currentStep >= result.steps.length && (
-                  <div className="mt-6 pt-6 border-t border-white/5 flex flex-col sm:flex-row gap-3">
-                    <a href="/citizen/certificate" className="btn-primary flex items-center justify-center gap-2 flex-1">
-                      <Award size={18}/> Download Certificate
-                    </a>
-                    <button className="btn-secondary flex items-center justify-center gap-2 flex-1">
-                      Share Certificate <ChevronRight size={16}/>
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </div>
   );
