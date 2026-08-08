@@ -105,7 +105,6 @@ export default function LoginPage() {
                   <label className="label-text">CNIC / Email</label>
                   <input className="input-field font-mono" placeholder="CNIC (35202-XXXXXXX-X) or Email"
                     value={cnic} onChange={e => setCnic(e.target.value.includes('@') ? e.target.value : formatCnic(e.target.value))} />
-                  <p className="text-[10px] text-white/20 mt-1">Demo: 35202-1234567-1 / Pass: Citizen@123</p>
                 </div>
                 <div>
                   <label className="label-text">Password</label>

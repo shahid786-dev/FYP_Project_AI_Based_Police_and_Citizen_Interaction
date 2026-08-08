@@ -18,6 +18,7 @@ class NADRARecord(models.Model):
     province      = models.CharField(max_length=100, blank=True)
     # In a real system this would be a biometric vector; here we store an image
     face_image    = models.ImageField(upload_to='nadra_faces/', blank=True, null=True)
+    face_embedding = models.JSONField(blank=True, null=True) # To store vector
     is_active     = models.BooleanField(default=True)
     created_at    = models.DateTimeField(auto_now_add=True)
 

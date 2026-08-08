@@ -5,7 +5,11 @@ Run: python manage.py seed_nadra
 """
 
 import datetime
+import os
+import shutil
 from django.core.management.base import BaseCommand
+from django.conf import settings
+from django.core.files import File
 from nadra.models import NADRARecord
 
 
@@ -78,17 +82,35 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         created_count = 0
-        for data in DUMMY_RECORDS:
+        updated_images_count = 0
+        
+        # Ensure media directory exists
+        media_nadra_dir = os.path.join(settings.MEDIA_ROOT, 'nadra_faces')
+        os.makedirs(media_nadra_dir, exist_ok=True)
+        
+        dataset_dir = r"d:\AI_Based_Police_and_Citizen_Interaction\Id_Card_Dataset"
+        dataset_images = sorted([f for f in os.listdir(dataset_dir) if f.endswith('.png') or f.endswith('.jpg')])
+
+        for idx, data in enumerate(DUMMY_RECORDS):
             obj, created = NADRARecord.objects.get_or_create(
                 cnic=data['cnic'],
                 defaults=data,
             )
             if created:
                 created_count += 1
+            
+            if not obj.face_image and idx < len(dataset_images):
+                img_name = dataset_images[idx]
+                img_path = os.path.join(dataset_dir, img_name)
+                if os.path.exists(img_path):
+                    with open(img_path, 'rb') as f:
+                        obj.face_image.save(img_name, File(f), save=True)
+                    updated_images_count += 1
 
         self.stdout.write(
             self.style.SUCCESS(
                 f'✓ NADRA seed complete: {created_count} new records created '
-                f'({len(DUMMY_RECORDS) - created_count} already existed).'
+                f'({len(DUMMY_RECORDS) - created_count} already existed). '
+                f'{updated_images_count} images assigned.'
             )
         )

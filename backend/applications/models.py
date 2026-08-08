@@ -58,6 +58,7 @@ class Document(models.Model):
         ('CNIC_FRONT', 'CNIC Front Side'),
         ('CNIC_BACK', 'CNIC Back Side'),
         ('PASSPORT_PHOTO', 'Passport-size Photo'),
+        ('LIVE_PHOTO', 'Live Captured Photo'),
         ('SUPPORTING', 'Supporting Document'),
     )
 
@@ -110,6 +111,10 @@ class Certificate(models.Model):
     verification_url = models.CharField(max_length=255)
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='VALID')
     pdf_file = models.FileField(upload_to='certificates/', blank=True, null=True)
+    certificate_hash = models.CharField(max_length=64, blank=True, null=True)
+    blockchain_transaction_hash = models.CharField(max_length=66, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
     def save(self, *args, **kwargs):
         if not self.certificate_number:

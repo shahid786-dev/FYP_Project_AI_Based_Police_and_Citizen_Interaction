@@ -7,3 +7,14 @@ reportlab
 drf-spectacular
 openai
 requests
+qrcode
+
+# ── AI Face Verification ─────────────────────────────────────────────────────
+opencv-python-headless   # face detection & image I/O (headless for server)
+numpy                    # vectorised cosine similarity
+Pillow                   # image preprocessing
+insightface              # ArcFace pre-trained model (primary)
+onnxruntime              # ONNX runtime for InsightFace inference
+
+# Optional fallback (install if InsightFace fails on your platform)
+# deepface               # DeepFace fallback (requires: pip install deepface tf-keras)

@@ -10,7 +10,7 @@ import StaffDashboard        from './pages/StaffDashboard';
 import AuthorityDashboard    from './pages/AuthorityDashboard';
 import AdminDashboard        from './pages/AdminDashboard';
 import VerificationRequestPage from './pages/VerificationRequestPage';
-import AIFaceRecognitionPage from './pages/AIFaceRecognitionPage';
+import FaceVerificationPage  from './pages/FaceVerificationPage';
 import PaymentPage           from './pages/PaymentPage';
 import TrackApplicationPage  from './pages/TrackApplicationPage';
 import DigitalCertificatePage from './pages/DigitalCertificatePage';
@@ -44,7 +44,7 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/track"    element={<TrackApplicationPage />} />
         <Route path="/blockchain" element={<BlockchainExplorer />} />
-        <Route path="/verify/:qrHash" element={<DigitalCertificatePage />} />
+        <Route path="/verify/certificate/:certNumber" element={<DigitalCertificatePage />} />
 
         {/* ── Citizen ── */}
         <Route path="/citizen/dashboard" element={
@@ -54,7 +54,7 @@ export default function App() {
           <ProtectedRoute allowedRoles={['CITIZEN']}><VerificationRequestPage /></ProtectedRoute>
         } />
         <Route path="/citizen/face-verify" element={
-          <ProtectedRoute allowedRoles={['CITIZEN']}><AIFaceRecognitionPage /></ProtectedRoute>
+          <ProtectedRoute allowedRoles={['CITIZEN']}><FaceVerificationPage /></ProtectedRoute>
         } />
         <Route path="/citizen/payment" element={
           <ProtectedRoute allowedRoles={['CITIZEN']}><PaymentPage /></ProtectedRoute>

@@ -5,7 +5,7 @@ import DashboardLayout from '../components/DashboardLayout';
 import { certAPI, applicationAPI } from '../api/apiClient';
 
 export default function DigitalCertificatePage() {
-  const { qrHash } = useParams();
+  const { certNumber } = useParams();
   const certRef = useRef(null);
   
   const [cert, setCert] = useState(null);
@@ -14,11 +14,11 @@ export default function DigitalCertificatePage() {
   const [applications, setApplications] = useState([]);
 
   useEffect(() => {
-    if (qrHash) {
+    if (certNumber) {
       // Public verification
-      certAPI.verify(qrHash)
+      certAPI.verify(certNumber)
         .then(res => { setCert(res.data); setLoading(false); })
-        .catch(err => { setError('Invalid or expired certificate hash.'); setLoading(false); });
+        .catch(err => { setError('Invalid or expired certificate number.'); setLoading(false); });
     } else {
       // Load user's latest completed applications
       applicationAPI.list()
@@ -40,7 +40,7 @@ export default function DigitalCertificatePage() {
         })
         .catch(err => { setError('Failed to load certificates.'); setLoading(false); });
     }
-  }, [qrHash]);
+  }, [certNumber]);
 
   const print = () => window.print();
 
@@ -61,7 +61,7 @@ export default function DigitalCertificatePage() {
 
   if (loading) {
     return (
-      <DashboardLayout role={qrHash ? 'public' : 'citizen'} userName={cert?.applicant_name || 'Citizen'}>
+      <DashboardLayout role={certNumber ? 'public' : 'citizen'} userName={cert?.applicant_name || 'Citizen'}>
         <div className="flex items-center justify-center py-16">
           <svg className="animate-spin h-8 w-8 text-cyan-400" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
@@ -72,14 +72,14 @@ export default function DigitalCertificatePage() {
     );
   }
 
-  if (error || (!qrHash && applications.length === 0)) {
+  if (error || (!certNumber && applications.length === 0)) {
     return (
-      <DashboardLayout role={qrHash ? 'public' : 'citizen'} userName="Citizen">
+      <DashboardLayout role={certNumber ? 'public' : 'citizen'} userName="Citizen">
         <div className="glass-card p-12 text-center max-w-2xl mx-auto mt-10">
           <AlertCircle size={40} className="text-white/10 mx-auto mb-4" />
           <h2 className="text-white text-xl font-bold mb-2">No Certificates Found</h2>
           <p className="text-white/40 mb-6">{error || "You don't have any completed applications with generated certificates yet."}</p>
-          {!qrHash && (
+          {!certNumber && (
             <Link to="/citizen/request" className="btn-primary inline-flex items-center gap-2">
               <FileText size={16} /> Start a New Request
             </Link>
@@ -90,7 +90,7 @@ export default function DigitalCertificatePage() {
   }
 
   return (
-    <DashboardLayout role={qrHash ? 'public' : 'citizen'} userName={cert?.applicant_name || 'Citizen'}>
+    <DashboardLayout role={certNumber ? 'public' : 'citizen'} userName={cert?.applicant_name || 'Citizen'}>
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-bold text-white">Digital Certificate</h1>
@@ -100,7 +100,7 @@ export default function DigitalCertificatePage() {
           <button onClick={print} className="btn-secondary flex items-center gap-2 text-sm">
             <Printer size={16}/> Print
           </button>
-          {!qrHash && cert?.app_data?.id && (
+          {!certNumber && cert?.app_data?.id && (
             <button onClick={() => handleDownloadPdf(cert.app_data.id)} className="btn-primary flex items-center gap-2 text-sm">
               <Download size={16}/> Download PDF
             </button>

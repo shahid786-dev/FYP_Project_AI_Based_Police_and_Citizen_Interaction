@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Shield, Upload, Camera, CheckCircle, ChevronRight, ChevronLeft, Eye, EyeOff, User } from 'lucide-react';
+import { Shield, Upload, Camera, CheckCircle, ChevronRight, ChevronLeft, Eye, EyeOff, User, AlertCircle } from 'lucide-react';
+import { useDispatch } from 'react-redux';
+import { authAPI } from '../api/apiClient';
+import { loginSuccess } from '../store/authSlice';
 
 const STEPS = ['Personal Info', 'Address & Contact', 'Security', 'Verification'];
 
@@ -13,6 +16,8 @@ export default function RegistrationPage() {
   const [otpSent, setOtpSent] = useState(false);
   const [otp, setOtp] = useState(['','','','','','']);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const dispatch = useDispatch();
   const [form, setForm] = useState({
     cnic:'', fullName:'', fatherName:'', dob:'', gender:'',
     address:'', city:'', province:'', phone:'', email:'',
@@ -31,16 +36,45 @@ export default function RegistrationPage() {
   const next = () => { if (step < STEPS.length-1) setStep(s => s+1); };
   const prev = () => { if (step > 0) setStep(s => s-1); };
 
-  const sendOtp = () => { setLoading(true); setTimeout(() => { setLoading(false); setOtpSent(true); }, 1200); };
+  const sendOtp = async () => {
+    setLoading(true); setError('');
+    try {
+      await authAPI.register({
+        cnic: form.cnic,
+        full_name: form.fullName,
+        father_name: form.fatherName,
+        date_of_birth: form.dob,
+        gender: form.gender.toUpperCase(),
+        district: form.city,
+        province: form.province,
+        mobile_number: form.phone,
+        email: form.email,
+        password: form.password,
+        role: 'CITIZEN'
+      });
+      setOtpSent(true);
+    } catch (err) {
+      setError(err.response?.data?.error || err.response?.data?.cnic?.[0] || 'Registration failed. Check your inputs.');
+    } finally { setLoading(false); }
+  };
 
   const handleOtpChange = (val, idx) => {
     const arr = [...otp]; arr[idx] = val.slice(-1); setOtp(arr);
     if (val && idx < 5) document.getElementById(`rotp-${idx+1}`)?.focus();
   };
 
-  const handleSubmit = () => {
-    setLoading(true);
-    setTimeout(() => { setLoading(false); navigate('/citizen/dashboard'); }, 1500);
+  const handleSubmit = async () => {
+    if (!agreed) return;
+    setLoading(true); setError('');
+    try {
+      const otpCode = otp.join('');
+      const res = await authAPI.verifyOtp({ cnic: form.cnic, otp_code: otpCode });
+      const { access, role, full_name, cnic } = res.data;
+      dispatch(loginSuccess({ token: access, user: { full_name, cnic }, role }));
+      navigate('/citizen/dashboard');
+    } catch (err) {
+      setError('Invalid or expired OTP.');
+    } finally { setLoading(false); }
   };
 
   const handlePhoto = (e) => {
@@ -231,12 +265,14 @@ export default function RegistrationPage() {
                   </div>
                   <p className="text-white/70 mb-2">We'll send a 6-digit OTP to:</p>
                   <p className="text-cyan-400 font-mono font-semibold mb-6">{form.phone || '0300-XXXXXXX'}</p>
+                  {error && <div className="text-red-400 text-sm mb-4 flex items-center justify-center gap-2"><AlertCircle size={16}/>{error}</div>}
                   <button onClick={sendOtp} disabled={loading} className="btn-primary flex items-center justify-center gap-2 mx-auto">
-                    {loading ? <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg> : 'Send OTP'}
+                    {loading ? <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg> : 'Register & Send OTP'}
                   </button>
                 </div>
               ) : (
                 <div>
+                  {error && <div className="text-red-400 text-sm mb-4 text-center flex items-center justify-center gap-2"><AlertCircle size={16}/>{error}</div>}
                   <p className="text-white/60 text-sm text-center mb-6">Enter the 6-digit code sent to <span className="text-cyan-400">{form.phone}</span></p>
                   <div className="flex gap-2 justify-center mb-6">
                     {otp.map((v, i) => (

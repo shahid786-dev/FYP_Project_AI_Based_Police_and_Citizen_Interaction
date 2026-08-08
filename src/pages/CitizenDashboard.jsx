@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
-import { FileText, Clock, CheckCircle, AlertCircle, PlusCircle, Download, Search } from 'lucide-react';
+import { FileText, Clock, CheckCircle, AlertCircle, PlusCircle, Download, Search, User as UserIcon, Camera } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { applicationAPI } from '../api/apiClient';
 import { setApplications } from '../store/applicationSlice';
@@ -63,10 +63,34 @@ export default function CitizenDashboard() {
           </h1>
           <p className="text-white/50 mt-1 text-sm">Manage your police verification requests</p>
         </div>
-        <button onClick={() => navigate('/citizen/request')}
-          className="btn-primary flex items-center gap-2">
-          <PlusCircle size={18} /> New Application
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={() => navigate('/citizen/face-verify')}
+            className="btn-secondary flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 border-none text-white shadow-glow-purple px-4 py-2.5 rounded-xl hover:scale-105 transition">
+            <Camera size={18} /> Face Verification
+          </button>
+          <button onClick={() => navigate('/citizen/request')}
+            className="btn-primary flex items-center gap-2">
+            <PlusCircle size={18} /> New Application
+          </button>
+        </div>
+      </div>
+
+      {/* Profile Card */}
+      <div className="glass-card p-6 mb-8 flex items-center gap-5 border border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-transparent">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-600 flex items-center justify-center flex-shrink-0 shadow-glow-cyan">
+          <UserIcon size={28} className="text-white" />
+        </div>
+        <div className="flex-1">
+          <h2 className="text-white font-bold text-xl">{user?.full_name || 'Citizen'}</h2>
+          <div className="flex items-center gap-4 mt-1">
+            <p className="text-cyan-400 text-sm font-mono flex items-center gap-1">
+              <span className="text-white/40">CNIC:</span> {user?.cnic || 'N/A'}
+            </p>
+            <p className="text-white/40 text-sm flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-green-400"></span> Verified Citizen
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Stats */}
@@ -128,10 +152,22 @@ export default function CitizenDashboard() {
                 </div>
                 <span className={STATUS_STYLE[app.status] || 'status-pending'}>{app.status.replace(/_/g,' ')}</span>
                 {app.status === 'COMPLETED' && (
-                  <button onClick={() => handleDownload(app)}
-                    className="flex items-center gap-1.5 text-xs text-cyan-400 hover:underline">
-                    <Download size={14} /> Download
-                  </button>
+                  <div className="flex flex-col gap-2 md:flex-row items-center">
+                    <button onClick={() => window.open(window.URL.createObjectURL(new Blob([app.certificate?.pdf_file || ''])), '_blank')}
+                      className="flex items-center gap-1.5 text-xs text-blue-400 hover:underline">
+                      <FileText size={14} /> View
+                    </button>
+                    <button onClick={() => handleDownload(app)}
+                      className="flex items-center gap-1.5 text-xs text-cyan-400 hover:underline">
+                      <Download size={14} /> Download
+                    </button>
+                    {app.certificate && (
+                      <button onClick={() => navigate(`/verify/certificate/${app.certificate.certificate_number}`)}
+                        className="flex items-center gap-1.5 text-xs text-green-400 hover:underline">
+                        <CheckCircle size={14} /> Verify
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ))}

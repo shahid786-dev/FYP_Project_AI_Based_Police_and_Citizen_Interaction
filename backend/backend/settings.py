@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'criminals.apps.CriminalsConfig',
     'chatbot.apps.ChatbotConfig',
     'audit.apps.AuditConfig',
+    'face_verification.apps.FaceVerificationConfig',  # AI Face Verification Module
 ]
 
 MIDDLEWARE = [
@@ -160,3 +161,53 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
 }
+
+# ── Face Verification Settings ───────────────────────────────────────────────
+# Similarity threshold for face match (cosine similarity, 0.0–1.0)
+FACE_VERIFICATION_THRESHOLD = float(os.environ.get('FACE_VERIFICATION_THRESHOLD', '0.70'))
+
+# ── Logging Configuration ─────────────────────────────────────────────────
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'face_verification': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
+# ── Certificate Generation Settings ──────────────────────────────────────
+CERTIFICATE_VALIDITY_DAYS = 180
+CERTIFICATE_COORDINATES = {
+    'NAME': (250, 420),
+    'FATHER_NAME': (250, 460),
+    'CNIC': (250, 500),
+    'DOB': (250, 540),
+    'CERT_NUM': (250, 580),
+    'ISSUE_DATE': (250, 620),
+    'EXPIRY_DATE': (250, 660),
+    'STATUS': (150, 700),
+    'QR_CODE': (237, 750),  # centered horizontally for 150 width on 625 img
+    'QR_SIZE': 150
+}
+FRONTEND_URL = 'http://localhost:5173'

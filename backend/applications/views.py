@@ -136,19 +136,51 @@ class AIFaceVerifyView(APIView):
         confidence, liveness = 94.6, 0.98   # simulation defaults
 
         if live_image:
+            from deepface import DeepFace
+            import tempfile
+            import os
+
             try:
-                passport_photo = Document.objects.get(application=application, document_type='PASSPORT_PHOTO')
-                ai_url  = f"http://localhost:8001/api/ai/verify/"
-                resp    = requests.post(ai_url, files={
-                    'id_photo': passport_photo.file.open(),
-                    'live_photo': live_image.open()
-                }, timeout=10)
-                if resp.status_code == 200:
-                    result    = resp.json()
-                    confidence = result.get('confidence', 94.6)
-                    liveness   = result.get('liveness_score', 0.98)
-            except Exception:
-                pass  # fall back to simulation values
+                # Get user's NADRA record
+                from nadra.models import NADRARecord
+                nadra_record = NADRARecord.objects.filter(cnic=request.user.cnic).first()
+
+                if nadra_record and nadra_record.face_image:
+                    # Save live image temporarily to pass to DeepFace
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
+                        for chunk in live_image.chunks():
+                            tmp.write(chunk)
+                        tmp_path = tmp.name
+
+                    try:
+                        # Perform verification
+                        result = DeepFace.verify(
+                            img1_path=tmp_path,
+                            img2_path=nadra_record.face_image.path,
+                            model_name='Facenet',
+                            enforce_detection=False
+                        )
+                        
+                        # Distance goes from 0 (same) to threshold (usually ~0.4 for Facenet)
+                        # Let's map it to confidence score 0-100%
+                        distance = result.get('distance', 1.0)
+                        threshold = result.get('threshold', 0.40)
+                        
+                        if distance < threshold:
+                            confidence = 100 - (distance / threshold * 30) # Maps to 70-100
+                        else:
+                            confidence = max(0, 70 - ((distance - threshold) * 100))
+                            
+                        # Keep simulated liveness for now since DeepFace doesn't do anti-spoofing
+                        liveness = 0.95
+                        
+                    finally:
+                        os.unlink(tmp_path)
+                else:
+                    return Response({'error': 'NADRA biometric record not found for this user.'}, status=400)
+                    
+            except Exception as e:
+                return Response({'error': f'Face verification failed: {str(e)}'}, status=500)
 
         application.face_confidence  = confidence
         application.liveness_score   = liveness
@@ -317,33 +349,18 @@ class IssueCertificateView(APIView):
         if hasattr(application, 'certificate'):
             return Response({'error': 'Certificate already issued.'}, status=400)
 
-        sig_uuid         = str(uuid.uuid4())
-        verification_url = f"http://localhost:5173/verify/{sig_uuid}"
-        validity_expiry  = timezone.now().date() + datetime.timedelta(days=180)
-
-        cert = Certificate.objects.create(
-            application=application,
-            validity_expiry=validity_expiry,
-            qr_code_hash=sig_uuid,
-            digital_signature=f"PKV-SIG-{sig_uuid[:18].upper()}",
-            verification_url=verification_url,
-            status='VALID',
-        )
-        application.status = 'COMPLETED'
-        application.save()
-
-        BlockchainService.add_block(
-            'CERTIFICATE_ISSUE', str(application.id), request.user.cnic,
-            {'certificate_number': cert.certificate_number,
-             'tracking_id': application.tracking_id,
-             'blockchain_hash': cert.qr_code_hash},
-        )
-        notify_certificate_ready(
-            application.applicant, application.tracking_id, cert.certificate_number
-        )
-
-        return Response({'message': 'Certificate issued.', 'certificate_number': cert.certificate_number,
-                         'status': 'COMPLETED'})
+        try:
+            from applications.certificate_service import CertificateService
+            cert = CertificateService.generate_certificate(application)
+            
+            notify_certificate_ready(
+                application.applicant, application.tracking_id, cert.certificate_number
+            )
+            
+            return Response({'message': 'Certificate issued.', 'certificate_number': cert.certificate_number,
+                             'status': 'COMPLETED'})
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
 
 
 # ─── Police Review (legacy compat — staff can still do quick approve) ─────────
@@ -522,9 +539,9 @@ class StaffResetPasswordView(APIView):
 class PublicCertificateVerifyView(APIView):
     permission_classes = [permissions.AllowAny]
 
-    def get(self, request, qr_code_hash):
+    def get(self, request, certificate_number):
         try:
-            cert = Certificate.objects.get(qr_code_hash=qr_code_hash)
+            cert = Certificate.objects.get(certificate_number=certificate_number)
         except Certificate.DoesNotExist:
             return Response({'error': 'Invalid Certificate'}, status=404)
 
@@ -562,94 +579,14 @@ class DownloadCertificatePDFView(APIView):
         if request.user != application.applicant and request.user.role not in ['POLICE_STAFF','POLICE_AUTHORITY','SUPER_ADMIN']:
             return Response({'error': 'Unauthorized'}, status=403)
 
-        from blockchain.models import BlockchainBlock
-        bc_block = BlockchainBlock.objects.filter(
-            record_id=str(application.id), action_type='CERTIFICATE_ISSUE'
-        ).first()
-        blockchain_hash = bc_block.current_hash if bc_block else 'N/A'
-
-        # QR Code
-        qr_bytes = _generate_qr_bytes(cert.verification_url)
-
-        buf = io.BytesIO()
-        p   = canvas.Canvas(buf, pagesize=letter)
-        W, H = letter
-
-        # Border
-        p.setStrokeColor(colors.HexColor('#0e7490'))
-        p.setLineWidth(4)
-        p.rect(18, 18, W-36, H-36)
-        p.setLineWidth(1)
-        p.rect(24, 24, W-48, H-48)
-
-        # Header
-        p.setFont('Helvetica-Bold', 20)
-        p.setFillColor(colors.HexColor('#0f172a'))
-        p.drawCentredString(W/2, H-70, 'ISLAMIC REPUBLIC OF PAKISTAN')
-        p.setFont('Helvetica-Bold', 14)
-        p.setFillColor(colors.HexColor('#0e7490'))
-        p.drawCentredString(W/2, H-92, 'POLICE VERIFICATION CERTIFICATE')
-
-        p.setStrokeColor(colors.HexColor('#e2e8f0'))
-        p.line(80, H-105, W-80, H-105)
-
-        # Fields
-        p.setFont('Helvetica', 11)
-        p.setFillColor(colors.HexColor('#1e293b'))
-        fields = [
-            ('Certificate No',  cert.certificate_number),
-            ('Issue Date',      str(cert.issue_date)),
-            ('Valid Until',     str(cert.validity_expiry)),
-            ('Applicant Name',  application.applicant.full_name),
-            ('CNIC',            application.applicant.cnic),
-            ("Father's Name",   application.applicant.father_name or 'N/A'),
-            ('District',        f"{application.applicant.district or ''}, {application.applicant.province or ''}"),
-            ('Purpose',         application.application_type),
-        ]
-        y = H - 140
-        for label, value in fields:
-            p.setFont('Helvetica-Bold', 11)
-            p.drawString(80, y, f"{label}:")
-            p.setFont('Helvetica', 11)
-            p.drawString(230, y, str(value))
-            y -= 24
-
-        # Verification status
-        p.setFont('Helvetica-Bold', 13)
-        p.setFillColor(colors.HexColor('#15803d'))
-        p.drawString(80, y - 10, 'VERIFICATION STATUS: CLEAN — NO CRIMINAL RECORD FOUND')
-
-        # Blockchain hash
-        p.setFont('Helvetica', 8)
-        p.setFillColor(colors.HexColor('#64748b'))
-        p.drawString(80, 100, f"Blockchain Hash: {blockchain_hash[:64]}")
-        p.drawString(80, 88,  f"Verification URL: {cert.verification_url}")
-
-        # QR Code
-        from reportlab.lib.utils import ImageReader
-        qr_img = ImageReader(io.BytesIO(qr_bytes))
-        p.drawImage(qr_img, W-150, 70, width=100, height=100)
-
-        # Digital signature
-        p.setFont('Helvetica-Bold', 10)
-        p.setFillColor(colors.HexColor('#1e293b'))
-        p.drawString(80, 130, 'Inspector General of Police')
-        p.setFont('Helvetica-Oblique', 9)
-        p.setFillColor(colors.HexColor('#64748b'))
-        p.drawString(80, 118, f"Sig: {cert.digital_signature[:30]}…")
-
-        p.showPage()
-        p.save()
-
-        pdf = buf.getvalue()
-        buf.close()
+        if not cert.pdf_file:
+            return Response({'error': 'Certificate file not generated properly.'}, status=404)
 
         BlockchainService.add_block(
             'CERTIFICATE_DOWNLOAD', str(application.id), request.user.cnic,
             {'certificate_number': cert.certificate_number, 'tracking_id': application.tracking_id},
         )
 
-        response = HttpResponse(content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="PakVerify_Cert_{application.tracking_id}.pdf"'
-        response.write(pdf)
+        response = HttpResponse(cert.pdf_file.read(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="PakVerify_Cert_{cert.certificate_number}.pdf"'
         return response

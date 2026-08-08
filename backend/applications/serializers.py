@@ -18,7 +18,7 @@ class ChallanSerializer(serializers.ModelSerializer):
 class CertificateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Certificate
-        fields = ('id', 'certificate_number', 'issue_date', 'validity_expiry', 'qr_code_hash', 'digital_signature', 'verification_url', 'status', 'pdf_file')
+        fields = ('id', 'certificate_number', 'issue_date', 'validity_expiry', 'qr_code_hash', 'digital_signature', 'verification_url', 'status', 'pdf_file', 'certificate_hash', 'blockchain_transaction_hash', 'created_at', 'updated_at')
 
 class ApplicationSerializer(serializers.ModelSerializer):
     applicant = UserSerializer(read_only=True)

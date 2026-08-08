@@ -33,5 +33,5 @@ urlpatterns = [
     path('police/analytics/',                              AuthorityAnalyticsView.as_view()),
 
     # ── Public ────────────────────────────────────────────────────────────────
-    path('certificates/verify/<str:qr_code_hash>/',        PublicCertificateVerifyView.as_view()),
+    path('certificates/verify/<str:certificate_number>/',  PublicCertificateVerifyView.as_view()),
 ]
