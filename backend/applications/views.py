@@ -6,6 +6,9 @@ from django.utils import timezone
 from django.http import HttpResponse
 from django.db.models import Count, Sum
 import requests, datetime, io, uuid, qrcode
+import logging
+
+logger = logging.getLogger(__name__)
 
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -133,13 +136,20 @@ class AIFaceVerifyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        from nadra.service import perform_nadra_check
-        from criminals.service import perform_criminal_check
-
         try:
             application = Application.objects.get(pk=pk, applicant=request.user)
         except Application.DoesNotExist:
             return Response({'error': 'Application not found'}, status=404)
+
+        if application.status != 'PENDING':
+            # Safely recognize the current state and return success if already verified
+            if application.status in ['FACE_VERIFIED', 'CRIMINAL_CHECK', 'CRIMINAL_CHECKED', 'STAFF_REVIEWED', 'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED', 'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'APPROVED', 'COMPLETED']:
+                return Response({
+                    'message': 'Face verification already completed successfully.',
+                    'confidence': application.face_confidence or 100.0,
+                    'liveness_score': application.liveness_score or 1.0,
+                    'status': application.status,
+                })
 
         live_image = request.FILES.get('live_image')
         confidence, liveness = 94.6, 0.98   # simulation defaults
@@ -204,27 +214,10 @@ class AIFaceVerifyView(APIView):
         notify_ai_verified(request.user, application.tracking_id, confidence)
 
         if application.status == 'FACE_VERIFIED':
-            # Auto NADRA check
-            nadra_result = perform_nadra_check(application)
-            application.status = 'CRIMINAL_CHECKED'
-            application.save()
-            BlockchainService.add_block(
-                'NADRA_VERIFY', str(application.id), request.user.cnic,
-                {'result': nadra_result.result, 'score': nadra_result.similarity_score,
-                 'tracking_id': application.tracking_id},
-            )
-            notify_nadra_verified(request.user, application.tracking_id, nadra_result.result)
-
-            # Auto criminal check
-            criminal_result = perform_criminal_check(application)
-            BlockchainService.add_block(
-                'CRIMINAL_CHECK', str(application.id), request.user.cnic,
-                {'result': criminal_result.result, 'tracking_id': application.tracking_id},
-            )
-            notify_criminal_checked(request.user, application.tracking_id, criminal_result.result)
+            logger.info('Application %s progressed to FACE_VERIFIED. Awaiting Police Staff review.', application.tracking_id)
 
         return Response({
-            'message': 'Verification pipeline complete.',
+            'message': 'Face verification successful. Your application has been submitted for Police Staff review.',
             'confidence': confidence,
             'liveness_score': liveness,
             'status': application.status,
@@ -283,11 +276,10 @@ class ProcessPaymentView(APIView):
 class StaffForwardView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    # Statuses that staff can forward to admin (any pre-admin status)
-    FORWARDABLE_STATUSES = [
-        'PENDING', 'UNDER_REVIEW', 'FACE_VERIFIED', 'CRIMINAL_CHECK',
-        'CRIMINAL_CHECKED', 'STAFF_REVIEWED',
-    ]
+    # ── Stage 2 Guard ────────────────────────────────────────────────────────
+    # Staff can only forward AFTER completing the staff review (STAFF_REVIEWED).
+    # PENDING, FACE_VERIFIED, UNDER_REVIEW etc. are explicitly rejected.
+    REQUIRED_STATUS = 'STAFF_REVIEWED'
 
     def post(self, request, pk):
         if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
@@ -297,10 +289,24 @@ class StaffForwardView(APIView):
         except Application.DoesNotExist:
             return Response({'error': 'Not found'}, status=404)
 
-        if application.status not in self.FORWARDABLE_STATUSES:
+        # ── Idempotency: already forwarded ────────────────────────────────────
+        if application.status == 'FORWARDED_TO_ADMIN':
+            return Response({
+                'message': 'Application has already been forwarded to admin.',
+                'status': application.status,
+            })
+
+        # ── Guard: application must be in STAFF_REVIEWED ─────────────────────
+        if application.status != self.REQUIRED_STATUS:
             return Response(
-                {'error': f'Cannot forward application in status: {application.status}. It must be reviewed before forwarding.'},
-                status=400
+                {
+                    'error': (
+                        f'Cannot forward application in status "{application.status}". '
+                        f'Application must be reviewed by Police Staff first '
+                        f'(required status: {self.REQUIRED_STATUS}).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         remarks = request.data.get('remarks', '')
@@ -315,12 +321,21 @@ class StaffForwardView(APIView):
             'STAFF_FORWARD', str(application.id), request.user.cnic,
             {'remarks': remarks, 'tracking_id': application.tracking_id},
         )
+        logger.info('Application %s forwarded to admin by %s.', application.tracking_id, request.user.cnic)
 
         return Response({'message': 'Application forwarded to admin.', 'status': application.status})
 
 
 class StaffConfirmView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+
+    # ── Stage 2 Guard ────────────────────────────────────────────────────────
+    # Staff can only confirm AFTER the authority has approved.
+    # These are statuses that have already passed this step — return safe response.
+    ALREADY_CONFIRMED_STATUSES = [
+        'STAFF_CONFIRMED', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED',
+        'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'COMPLETED',
+    ]
 
     def post(self, request, pk):
         if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
@@ -330,8 +345,25 @@ class StaffConfirmView(APIView):
         except Application.DoesNotExist:
             return Response({'error': 'Not found'}, status=404)
 
+        # ── Idempotency: already confirmed ────────────────────────────────────
+        if application.status in self.ALREADY_CONFIRMED_STATUSES:
+            return Response({
+                'message': 'Application has already been confirmed. Challan was previously generated.',
+                'status': application.status,
+            })
+
+        # ── Guard: must be AUTHORITY_APPROVED ─────────────────────────────────
         if application.status != 'AUTHORITY_APPROVED':
-            return Response({'error': 'Application must be authority approved first.'}, status=400)
+            return Response(
+                {
+                    'error': (
+                        f'Cannot confirm application in status "{application.status}". '
+                        f'Application must be approved by Police Authority first '
+                        f'(required status: AUTHORITY_APPROVED).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         application.staff_confirmed_by = request.user
         application.staff_confirmed_at = timezone.now()
@@ -345,12 +377,20 @@ class StaffConfirmView(APIView):
             'STAFF_CONFIRM', str(application.id), request.user.cnic,
             {'tracking_id': application.tracking_id},
         )
+        logger.info('Application %s confirmed by staff %s. Challan generated.', application.tracking_id, request.user.cnic)
 
         return Response({'message': 'Application confirmed and challan generated.', 'status': application.status})
 
 
 class StaffVerifyPaymentView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+
+    # ── Stage 2 Guard ────────────────────────────────────────────────────────
+    # Staff can only verify payment when the citizen has actually submitted it.
+    # These statuses indicate the payment step has already passed.
+    ALREADY_VERIFIED_STATUSES = [
+        'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'COMPLETED',
+    ]
 
     def post(self, request, pk):
         if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
@@ -360,17 +400,30 @@ class StaffVerifyPaymentView(APIView):
         except Application.DoesNotExist:
             return Response({'error': 'Application not found'}, status=404)
 
+        # ── Idempotency: payment already verified ─────────────────────────────
+        if application.status in self.ALREADY_VERIFIED_STATUSES:
+            return Response({
+                'message': 'Payment has already been verified for this application.',
+                'status': application.status,
+            })
+
+        # ── Guard: must be PAYMENT_SUBMITTED ──────────────────────────────────
+        if application.status != 'PAYMENT_SUBMITTED':
+            return Response(
+                {
+                    'error': (
+                        f'Cannot verify payment for application in status "{application.status}". '
+                        f'The citizen must submit payment first (required status: PAYMENT_SUBMITTED).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Safely access the payment record (OneToOneField raises RelatedObjectDoesNotExist)
         try:
             payment = application.payment_record
         except Exception:
             return Response({'error': 'Payment record not found. Citizen has not submitted payment yet.'}, status=404)
-
-        if application.status != 'PAYMENT_SUBMITTED':
-            return Response(
-                {'error': f'Application must be in PAYMENT_SUBMITTED state, currently: {application.status}'},
-                status=400
-            )
 
         payment.is_verified = True
         payment.verified_by = request.user
@@ -387,8 +440,11 @@ class StaffVerifyPaymentView(APIView):
             {'transaction_id': payment.transaction_id, 'tracking_id': application.tracking_id},
         )
         notify_payment_confirmed(application.applicant, application.tracking_id)
+        logger.info('Payment verified for application %s by staff %s.', application.tracking_id, request.user.cnic)
 
-        # Auto-issue certificate after payment is verified
+        # NOTE (Stage 4): Auto-certificate issuance is preserved here as-is.
+        # Stage 4 will consolidate certificate generation into a single explicit path.
+        # Do not refactor certificate logic in this stage.
         try:
             application.status = 'PAYMENT_CONFIRMED'
             application.save()
@@ -415,6 +471,16 @@ class StaffVerifyPaymentView(APIView):
 class StaffRemarkView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    # ── Stage 2 Guard ────────────────────────────────────────────────────────
+    # Staff review (remark) is only valid AFTER face verification is complete.
+    # Applications that have progressed beyond STAFF_REVIEWED are idempotent.
+    REVIEWABLE_STATUSES = ['FACE_VERIFIED']
+    ALREADY_REVIEWED_STATUSES = [
+        'STAFF_REVIEWED', 'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED',
+        'AUTHORITY_REJECTED', 'STAFF_CONFIRMED', 'PAYMENT_PENDING',
+        'PAYMENT_SUBMITTED', 'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'COMPLETED',
+    ]
+
     def post(self, request, pk):
         if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
             return Response({'error': 'Unauthorized'}, status=403)
@@ -423,10 +489,32 @@ class StaffRemarkView(APIView):
         except Application.DoesNotExist:
             return Response({'error': 'Not found'}, status=404)
 
+        # ── Idempotency: already reviewed ─────────────────────────────────────
+        if application.status in self.ALREADY_REVIEWED_STATUSES:
+            return Response({
+                'message': f'Application has already been reviewed (current status: {application.status}).',
+                'status': application.status,
+            })
+
+        # ── Guard: must be FACE_VERIFIED ──────────────────────────────────────
+        if application.status not in self.REVIEWABLE_STATUSES:
+            return Response(
+                {
+                    'error': (
+                        f'Cannot review application in status "{application.status}". '
+                        f'Face verification must be completed first '
+                        f'(required status: FACE_VERIFIED).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         remarks        = request.data.get('remarks', '')
         recommendation = request.data.get('recommendation', 'PENDING')  # APPROVE / REJECT / MORE_INFO
 
-        application.notes  = remarks
+        application.staff_notes = remarks
+        application.staff_reviewed_by = request.user
+        application.staff_reviewed_at = timezone.now()
         application.status = 'STAFF_REVIEWED'
         application.save()
 
@@ -436,6 +524,7 @@ class StaffRemarkView(APIView):
              'tracking_id': application.tracking_id},
         )
         notify_staff_reviewed(application.applicant, application.tracking_id, remarks)
+        logger.info('Application %s staff-reviewed by %s.', application.tracking_id, request.user.cnic)
 
         return Response({'message': 'Remark saved.', 'status': application.status,
                          'recommendation': recommendation})
@@ -445,6 +534,18 @@ class StaffRemarkView(APIView):
 
 class AuthorityDecisionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+
+    # ── Stage 2 Guard ────────────────────────────────────────────────────────
+    # Authority can ONLY approve or reject applications that have been forwarded
+    # by Police Staff.  Any other status is an invalid transition.
+    REQUIRED_STATUS = 'FORWARDED_TO_ADMIN'
+
+    # These statuses mean a decision has already been recorded.
+    ALREADY_DECIDED_STATUSES = [
+        'AUTHORITY_APPROVED', 'AUTHORITY_REJECTED',
+        'STAFF_CONFIRMED', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED',
+        'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'COMPLETED',
+    ]
 
     def post(self, request, pk):
         if request.user.role not in ['POLICE_AUTHORITY', 'SUPER_ADMIN']:
@@ -460,6 +561,26 @@ class AuthorityDecisionView(APIView):
         if decision not in ['APPROVE', 'REJECT']:
             return Response({'error': 'decision must be APPROVE or REJECT'}, status=400)
 
+        # ── Idempotency: decision already recorded ────────────────────────────
+        if application.status in self.ALREADY_DECIDED_STATUSES:
+            return Response({
+                'message': f'A decision has already been recorded for this application (current status: {application.status}).',
+                'status': application.status,
+            })
+
+        # ── Guard: must be FORWARDED_TO_ADMIN ─────────────────────────────────
+        if application.status != self.REQUIRED_STATUS:
+            return Response(
+                {
+                    'error': (
+                        f'Cannot make a decision on application in status "{application.status}". '
+                        f'Application must be forwarded by Police Staff first '
+                        f'(required status: {self.REQUIRED_STATUS}).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         application.admin_notes = reason
         application.admin_decided_by = request.user
         application.admin_decided_at = timezone.now()
@@ -472,6 +593,7 @@ class AuthorityDecisionView(APIView):
                 {'tracking_id': application.tracking_id, 'reason': reason},
             )
             notify_authority_decision(application.applicant, application.tracking_id, True)
+            logger.info('Application %s APPROVED by authority %s.', application.tracking_id, request.user.cnic)
         else:
             application.status = 'AUTHORITY_REJECTED'
             application.notes  = reason
@@ -481,6 +603,7 @@ class AuthorityDecisionView(APIView):
                 {'tracking_id': application.tracking_id, 'reason': reason},
             )
             notify_authority_decision(application.applicant, application.tracking_id, False, reason)
+            logger.info('Application %s REJECTED by authority %s.', application.tracking_id, request.user.cnic)
 
         return Response({'message': f'Application {decision}D.', 'status': application.status})
 
