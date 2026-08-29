@@ -78,6 +78,12 @@ class FaceVerificationReport(models.Model):
     matched_cnic        = models.CharField(max_length=15, blank=True, null=True)
     matched_citizen_name = models.CharField(max_length=100, blank=True, null=True)
     matched_father_name  = models.CharField(max_length=100, blank=True, null=True)
+    matched_date_of_birth = models.CharField(max_length=50, blank=True, null=True)
+    matched_gender        = models.CharField(max_length=20, blank=True, null=True)
+    matched_address       = models.TextField(blank=True, null=True)
+    matched_district      = models.CharField(max_length=100, blank=True, null=True)
+    matched_province      = models.CharField(max_length=100, blank=True, null=True)
+    matched_photo_url     = models.CharField(max_length=255, blank=True, null=True)
 
     # ── Similarity metrics ───────────────────────────────────────────────
     similarity_score    = models.FloatField(

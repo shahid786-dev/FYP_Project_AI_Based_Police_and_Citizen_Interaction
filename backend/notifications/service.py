@@ -29,14 +29,17 @@ def notify(recipient, notif_type: str, title: str, message: str, reference_id: s
     )
 
     # ── Simulated Email (console print) ────────────────────────────────────
-    print(f"\n{'='*60}")
-    print(f"📧 EMAIL NOTIFICATION")
-    print(f"To:      {recipient.email}")
-    print(f"Subject: {title}")
-    print(f"Body:    {message}")
-    if reference_id:
-        print(f"Ref ID:  {reference_id}")
-    print(f"{'='*60}\n")
+    try:
+        print(f"\n{'='*60}")
+        print(f"[EMAIL NOTIFICATION]")
+        print(f"To:      {recipient.email}")
+        print(f"Subject: {title}")
+        print(f"Body:    {message}")
+        if reference_id:
+            print(f"Ref ID:  {reference_id}")
+        print(f"{'='*60}\n")
+    except Exception:
+        pass
 
     return notif
 

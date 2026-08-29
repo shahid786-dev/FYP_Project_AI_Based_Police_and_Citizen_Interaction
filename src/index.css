@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -23,7 +23,7 @@ html {
 }
 
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'DM Sans', system-ui, sans-serif;
   background: var(--bg-primary);
   color: #e2e8f0;
   overflow-x: hidden;
@@ -85,6 +85,11 @@ body {
   }
   .input-field:focus {
     box-shadow: 0 0 15px rgba(0,212,255,0.15);
+  }
+  
+  /* Fix dropdown options being invisible on white bg */
+  option {
+    @apply bg-slate-900 text-white;
   }
 
   .label-text {

@@ -32,6 +32,7 @@ API.interceptors.response.use(
 export const authAPI = {
   register:     (data) => API.post('/api/auth/register/', data),
   login:        (data) => API.post('/api/auth/login/', data),
+  loginFace:    (data) => API.post('/api/auth/login/face/', data, { headers: { 'Content-Type': 'multipart/form-data' } }),
   verifyOtp:    (data) => API.post('/api/auth/verify-otp/', data),
   requestReset: (data) => API.post('/api/auth/request-reset/', data),
   confirmReset: (data) => API.post('/api/auth/confirm-reset/', data),
@@ -59,6 +60,10 @@ export const policeAPI = {
   allApplications: ()         => API.get('/api/citizen/applications/'),
   review:          (id, data) => API.post(`/api/police/applications/${id}/review/`, data),
   staffRemark:     (id, data) => API.post(`/api/staff/applications/${id}/remark/`, data),
+  forward:         (id, data) => API.post(`/api/staff/applications/${id}/forward/`, data),
+  confirmApp:      (id, data) => API.post(`/api/staff/applications/${id}/confirm/`, data),
+  verifyPayment:   (id, data) => API.post(`/api/staff/applications/${id}/verify-payment/`, data),
+  issueCert:       (id)       => API.post(`/api/staff/applications/${id}/issue-cert/`),
   criminalSearch:  (data, fd) => fd
     ? API.post('/api/criminals/search/', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
     : API.post('/api/criminals/search/', data),
@@ -109,3 +114,23 @@ export const chatbotAPI = {
 export const certAPI = {
   verify: (qrHash) => API.get(`/api/certificates/verify/${qrHash}/`),
 };
+
+// ─── Incident, Safety & Emergency SOS API ─────────────────────
+export const incidentsAPI = {
+  sendSOS:          (data)         => API.post('/api/incidents/sos/', data),
+  listSOS:          ()             => API.get('/api/incidents/sos/list/'),
+  updateSOSStatus:  (id, data)     => API.put(`/api/incidents/sos/${id}/status/`, data),
+  
+  createComplaint:  (data)         => API.post('/api/incidents/complaints/', data),
+  listComplaints:   (category)     => API.get('/api/incidents/complaints/', { params: { category } }),
+  getComplaint:     (id)           => API.get(`/api/incidents/complaints/${id}/`),
+  updateComplaint:  (id, data)     => API.put(`/api/incidents/complaints/${id}/`, data),
+  assignOfficer:    (id, officerId)=> API.post(`/api/incidents/complaints/${id}/assign/`, { officer_id: officerId }),
+  
+  uploadEvidence:   (fd)           => API.post('/api/incidents/evidence/upload/', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
+  
+  trackUnified:     (trackId)      => API.get(`/api/incidents/track/${encodeURIComponent(trackId)}/`),
+};
+

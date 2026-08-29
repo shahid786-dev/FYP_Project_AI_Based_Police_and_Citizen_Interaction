@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     ApplicationListCreateView, ApplicationDetailView, UploadDocumentView,
     AIFaceVerifyView, ProcessPaymentView,
-    StaffRemarkView,
+    StaffRemarkView, StaffForwardView, StaffConfirmView, StaffVerifyPaymentView,
     AuthorityDecisionView, IssueCertificateView,
     PoliceReviewApplicationView,
     StaffListCreateView, StaffDetailView, StaffToggleActiveView, StaffResetPasswordView,
@@ -21,11 +21,14 @@ urlpatterns = [
 
     # ── Police Staff ──────────────────────────────────────────────────────────
     path('staff/applications/<int:pk>/remark/',            StaffRemarkView.as_view()),
+    path('staff/applications/<int:pk>/forward/',           StaffForwardView.as_view()),
+    path('staff/applications/<int:pk>/confirm/',           StaffConfirmView.as_view()),
+    path('staff/applications/<int:pk>/verify-payment/',    StaffVerifyPaymentView.as_view()),
+    path('staff/applications/<int:pk>/issue-cert/',        IssueCertificateView.as_view()),  # updated role
     path('police/applications/<int:pk>/review/',           PoliceReviewApplicationView.as_view()),
 
     # ── Police Authority ──────────────────────────────────────────────────────
     path('authority/applications/<int:pk>/decide/',        AuthorityDecisionView.as_view()),
-    path('authority/applications/<int:pk>/issue-cert/',    IssueCertificateView.as_view()),
     path('authority/staff/',                               StaffListCreateView.as_view()),
     path('authority/staff/<int:pk>/',                      StaffDetailView.as_view()),
     path('authority/staff/<int:pk>/toggle-active/',        StaffToggleActiveView.as_view()),

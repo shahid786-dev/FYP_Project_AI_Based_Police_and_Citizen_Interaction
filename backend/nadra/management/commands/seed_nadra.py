@@ -74,21 +74,62 @@ DUMMY_RECORDS = [
     dict(cnic='42101-0000000-0', full_name='Zunera Waseem',        father_name='Waseem Ahmad',
          date_of_birth=datetime.date(2000, 12, 5), gender='F',
          address='House 67, I-8/3', district='Islamabad', province='ICT'),
+    # ── 9 Identity Card Records (linked to real face images) ─────────────────
+    dict(cnic='42301-1000001-1', full_name='Mudasir Ali',          father_name='Ali Muhammad',
+         date_of_birth=datetime.date(1998, 4, 10), gender='M',
+         address='House 5, Gulshan-e-Iqbal Block 3', district='Karachi', province='Sindh'),
+    dict(cnic='42301-1000002-2', full_name='Mudasir Shah',         father_name='Shah Muhammad',
+         date_of_birth=datetime.date(1997, 8, 22), gender='M',
+         address='Plot 12, North Nazimabad Block F', district='Karachi', province='Sindh'),
+    dict(cnic='42301-1000003-3', full_name='Hamid Khan',           father_name='Amir Khan',
+         date_of_birth=datetime.date(1995, 3, 5), gender='M',
+         address='Street 7, Hayatabad Phase 4', district='Peshawar', province='KPK'),
+    dict(cnic='42301-1000004-4', full_name='Siraj ul Haq',         father_name='Haq Nawaz',
+         date_of_birth=datetime.date(1993, 11, 15), gender='M',
+         address='House 22, Satellite Town Block A', district='Rawalpindi', province='Punjab'),
+    dict(cnic='42301-1000005-5', full_name='Karan Das',            father_name='Roshan Das',
+         date_of_birth=datetime.date(1999, 6, 20), gender='M',
+         address='Flat 3, Defence View Phase 2', district='Karachi', province='Sindh'),
+    dict(cnic='42301-1000006-6', full_name='Haroon Rashid',        father_name='Abdul Rashid',
+         date_of_birth=datetime.date(1996, 1, 28), gender='M',
+         address='House 9, G-13/2', district='Islamabad', province='ICT'),
+    dict(cnic='42301-1000007-7', full_name='Abdul Mutali',         father_name='Ghulam Mutali',
+         date_of_birth=datetime.date(1990, 9, 3), gender='M',
+         address='Village Sohawa, Tehsil Gujar Khan', district='Rawalpindi', province='Punjab'),
+    dict(cnic='42301-1000008-8', full_name='Eman Fatima',          father_name='Fateh Muhammad',
+         date_of_birth=datetime.date(2001, 2, 14), gender='F',
+         address='House 33, Model Colony', district='Karachi', province='Sindh'),
+    dict(cnic='42301-1000009-9', full_name='Farhan Iqbal',         father_name='Iqbal Ahmed',
+         date_of_birth=datetime.date(1994, 7, 7), gender='M',
+         address='Plot 8, Bahria Town Phase 5', district='Lahore', province='Punjab'),
 ]
+
+# Maps CNIC to the specific named image filename in Id_Card_Dataset
+CNIC_TO_IMAGE_MAP = {
+    '42301-1000001-1': 'MudasirAli.png',
+    '42301-1000002-2': 'MudasirShah.png',
+    '42301-1000003-3': 'Hamid.png',
+    '42301-1000004-4': 'Siraj.png',
+    '42301-1000005-5': 'Karan.png',
+    '42301-1000006-6': 'Haroon.png',
+    '42301-1000007-7': 'AbdulMutali.png',
+    '42301-1000008-8': 'Eman.png',
+    '42301-1000009-9': 'Farhan.png',
+}
 
 
 class Command(BaseCommand):
-    help = 'Seed the NADRA dummy database with 20 citizen records'
+    help = 'Seed the NADRA dummy database with citizen records (including 9 identity card persons)'
 
     def handle(self, *args, **options):
         created_count = 0
         updated_images_count = 0
-        
+
         # Ensure media directory exists
         media_nadra_dir = os.path.join(settings.MEDIA_ROOT, 'nadra_faces')
         os.makedirs(media_nadra_dir, exist_ok=True)
-        
-        dataset_dir = r"d:\AI_Based_Police_and_Citizen_Interaction\Id_Card_Dataset"
+
+        dataset_dir = str(settings.BASE_DIR.parent / 'Id_Card_Dataset')
         dataset_images = sorted([f for f in os.listdir(dataset_dir) if f.endswith('.png') or f.endswith('.jpg')])
 
         for idx, data in enumerate(DUMMY_RECORDS):
@@ -98,18 +139,33 @@ class Command(BaseCommand):
             )
             if created:
                 created_count += 1
-            
-            if not obj.face_image and idx < len(dataset_images):
-                img_name = dataset_images[idx]
-                img_path = os.path.join(dataset_dir, img_name)
-                if os.path.exists(img_path):
-                    with open(img_path, 'rb') as f:
-                        obj.face_image.save(img_name, File(f), save=True)
-                    updated_images_count += 1
+
+            # Try to link a face image if not already set
+            if not obj.face_image:
+                # 1. Check the CNIC_TO_IMAGE_MAP for named identity card images
+                named_img = CNIC_TO_IMAGE_MAP.get(data['cnic'])
+                if named_img:
+                    img_path = os.path.join(dataset_dir, named_img)
+                    if os.path.exists(img_path):
+                        with open(img_path, 'rb') as f:
+                            obj.face_image.save(named_img, File(f), save=True)
+                        updated_images_count += 1
+                        self.stdout.write(f'  Linked {named_img} -> {data["cnic"]} ({data["full_name"]})')
+                        continue
+
+                # 2. Fall back to positional dataset image
+                numeric_idx = idx - len(CNIC_TO_IMAGE_MAP)  # offset for records without named images
+                if 0 <= numeric_idx < len(dataset_images):
+                    img_name = dataset_images[numeric_idx]
+                    img_path = os.path.join(dataset_dir, img_name)
+                    if os.path.exists(img_path):
+                        with open(img_path, 'rb') as f:
+                            obj.face_image.save(img_name, File(f), save=True)
+                        updated_images_count += 1
 
         self.stdout.write(
             self.style.SUCCESS(
-                f'✓ NADRA seed complete: {created_count} new records created '
+                f'[SUCCESS] NADRA seed complete: {created_count} new records created '
                 f'({len(DUMMY_RECORDS) - created_count} already existed). '
                 f'{updated_images_count} images assigned.'
             )

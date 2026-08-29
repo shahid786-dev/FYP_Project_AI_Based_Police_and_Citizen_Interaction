@@ -34,11 +34,12 @@ logger = logging.getLogger('face_verification')
 _face_app = None  # InsightFace application
 _MODEL_NAME = 'buffalo_l'
 
-# Quality thresholds
-MIN_FACE_SIZE = 60        # pixels — smaller faces are rejected
-MIN_SHARPNESS = 50.0      # Laplacian variance
-MIN_BRIGHTNESS = 40       # mean pixel value (0–255)
-MAX_BRIGHTNESS = 230
+# Quality thresholds — tuned for live webcam captures
+# Webcam feeds in varied lighting are more forgiving than studio shots.
+MIN_FACE_SIZE = 40        # pixels — smaller faces are rejected (was 60)
+MIN_SHARPNESS = 30.0      # Laplacian variance (was 50.0) — webcam often slightly soft
+MIN_BRIGHTNESS = 30       # mean pixel value 0–255 (was 40) — lower for dim environments
+MAX_BRIGHTNESS = 240      # (was 230) — allow slightly overexposed frames
 
 
 def _get_face_app():

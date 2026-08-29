@@ -23,7 +23,14 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 const CAPTURE_QUALITY = 0.9;
 
 // ─── Helper: get JWT token ──────────────────────────────────────────────────
-const getAuthToken = () => localStorage.getItem('accessToken') || '';
+const getAuthToken = () => {
+  try {
+    const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
+    return stored?.token || '';
+  } catch {
+    return '';
+  }
+};
 
 // ─── Status Badge Component ─────────────────────────────────────────────────
 const StatusBadge = ({ status, similarityPct }) => {
@@ -108,7 +115,16 @@ const SimilarityMeter = ({ pct }) => {
 // ─── Main Component ──────────────────────────────────────────────────────────
 const FaceVerification = ({ applicationId = null }) => {
   // ── State ────────────────────────────────────────────────────────────
-  const [phase, setPhase] = useState('idle'); // idle | camera | processing | result | error
+  const [phase, setPhase] = useState('cnic_input');
+  const [inputCnic, setInputCnic] = useState(() => {
+    // Pre-fill with the authenticated citizen's own registered CNIC
+    try {
+      const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
+      return stored?.user?.cnic || '';
+    } catch { return ''; }
+  });
+  const [cnicData, setCnicData] = useState(null);
+  
   const [capturedImage, setCapturedImage] = useState(null); // base64
   const [report, setReport] = useState(null);
   const [message, setMessage] = useState('');
@@ -132,6 +148,41 @@ const FaceVerification = ({ applicationId = null }) => {
       .then(res => setStoreStatus(res.data))
       .catch(() => setStoreStatus({ ready: false, error: 'Could not reach server' }));
   }, []);
+
+  // ── CNIC Verification Helper ──────────────────────────────────────────
+  const handleVerifyCnic = async () => {
+    if (!inputCnic) {
+      setErrorText('Please enter your CNIC.');
+      setPhase('error');
+      return;
+    }
+    setPhase('cnic_verifying');
+    try {
+      const token = getAuthToken();
+      const response = await axios.post(
+        `${API_BASE}/api/face-verify/verify-cnic/`,
+        { cnic: inputCnic },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      
+      if (response.data.found) {
+        if (!response.data.has_face_embedding) {
+           setErrorText('CNIC found, but no face record exists in the database. Contact admin.');
+           setPhase('error');
+           return;
+        }
+        setCnicData(response.data);
+        setPhase('idle'); // Move to camera readiness
+      } else {
+        setErrorText(response.data.error || 'CNIC not found in NADRA database.');
+        setPhase('error');
+      }
+    } catch (err) {
+      const detail = err.response?.data?.error || 'Verification failed. Please try again.';
+      setErrorText(detail);
+      setPhase('error');
+    }
+  };
 
   // ── Camera helpers ────────────────────────────────────────────────────
   const startCamera = useCallback(async () => {
@@ -198,7 +249,7 @@ const FaceVerification = ({ applicationId = null }) => {
   };
 
   // ── 3-second countdown then capture ──────────────────────────────────
-  const handleCaptureAndVerify = useCallback(() => {
+  const handleCaptureAndVerify = () => {
     let count = 3;
     setCountdown(count);
     const interval = setInterval(() => {
@@ -211,7 +262,7 @@ const FaceVerification = ({ applicationId = null }) => {
         executeCapture();
       }
     }, 1000);
-  }, []); // eslint-disable-line
+  };
 
   const executeCapture = async () => {
     const dataUrl = captureFrame();
@@ -229,13 +280,14 @@ const FaceVerification = ({ applicationId = null }) => {
       const blob = base64ToBlob(dataUrl);
       const formData = new FormData();
       formData.append('live_image', blob, 'live_capture.jpg');
+      formData.append('cnic', cnicData.cnic); // Passed from step 1
       if (applicationId) {
         formData.append('application_id', applicationId);
       }
 
       const token = getAuthToken();
       const response = await axios.post(
-        `${API_BASE}/api/face-verify/verify/`,
+        `${API_BASE}/api/face-verify/verify-with-cnic/`,
         formData,
         {
           headers: {
@@ -267,7 +319,18 @@ const FaceVerification = ({ applicationId = null }) => {
     setErrorText('');
     setCameraError('');
     setCountdown(null);
-    setPhase('idle');
+    if (cnicData) {
+      setPhase('idle'); // Go back to camera ready if CNIC already verified
+    } else {
+      setPhase('cnic_input');
+    }
+  };
+  
+  const handleFullReset = () => {
+    handleReset();
+    setInputCnic('');
+    setCnicData(null);
+    setPhase('cnic_input');
   };
 
   // ─────────────────────────────────────────────────────────────────────
@@ -329,32 +392,53 @@ const FaceVerification = ({ applicationId = null }) => {
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
       {/* ════════════════════════════════════════════════════════════ */}
-      {/* PHASE: idle ─────────────────────────────────────────────── */}
+      {/* PHASE: cnic_input ───────────────────────────────────────── */}
       {/* ════════════════════════════════════════════════════════════ */}
-      {phase === 'idle' && (
+      {phase === 'cnic_input' && (
         <div style={cardStyle}>
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
-            <div style={{ fontSize: '72px', marginBottom: '16px', opacity: 0.9 }}>📷</div>
-            <h3 style={{ margin: '0 0 8px', fontSize: '18px' }}>Ready to Verify</h3>
+            <div style={{ fontSize: '64px', marginBottom: '16px' }}>🪪</div>
+            <h3 style={{ margin: '0 0 8px', fontSize: '18px' }}>Step 1: CNIC Verification</h3>
             <p style={{ margin: '0 0 24px', color: '#aaa', fontSize: '14px', lineHeight: 1.6 }}>
-              Click the button below to open your webcam.<br />
-              Ensure good lighting and position your face clearly in frame.
+              Please enter your 13-digit CNIC number below to verify against the NADRA database.
             </p>
 
+            <div style={{ maxWidth: '340px', margin: '0 auto 24px' }}>
+              <p style={{ fontSize: '12px', color: '#8ecae6', marginBottom: '8px', textAlign: 'left' }}>
+                Your registered CNIC
+              </p>
+              <input
+                type="text"
+                value={inputCnic}
+                readOnly
+                style={{
+                  width: '100%', padding: '12px 16px', borderRadius: '10px',
+                  background: 'rgba(0,176,155,0.08)',
+                  border: '1px solid rgba(0,176,155,0.4)',
+                  color: '#00b09b', fontSize: '16px', textAlign: 'center',
+                  outline: 'none', fontFamily: 'monospace', fontWeight: 700,
+                  cursor: 'default',
+                }}
+              />
+              <p style={{ fontSize: '11px', color: '#555', marginTop: '6px', textAlign: 'center' }}>
+                🔒 Verification is only allowed for your own registered CNIC
+              </p>
+            </div>
+
             <button
-              id="start-verification-btn"
-              onClick={startCamera}
-              disabled={storeStatus && !storeStatus.ready}
+              id="verify-cnic-btn"
+              onClick={handleVerifyCnic}
+              disabled={!inputCnic || (storeStatus && !storeStatus.ready)}
               style={{
                 ...btnStyle,
-                background: (storeStatus && !storeStatus.ready)
+                background: (!inputCnic || (storeStatus && !storeStatus.ready))
                   ? 'rgba(255,255,255,0.1)'
                   : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                cursor: (storeStatus && !storeStatus.ready) ? 'not-allowed' : 'pointer',
-                opacity: (storeStatus && !storeStatus.ready) ? 0.5 : 1,
+                cursor: (!inputCnic || (storeStatus && !storeStatus.ready)) ? 'not-allowed' : 'pointer',
+                opacity: (!inputCnic || (storeStatus && !storeStatus.ready)) ? 0.5 : 1,
               }}
             >
-              🎥 Start Verification
+              Verify CNIC
             </button>
 
             {storeStatus && !storeStatus.ready && (
@@ -365,6 +449,62 @@ const FaceVerification = ({ applicationId = null }) => {
                 </code>
               </p>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════ */}
+      {/* PHASE: cnic_verifying ───────────────────────────────────── */}
+      {/* ════════════════════════════════════════════════════════════ */}
+      {phase === 'cnic_verifying' && (
+        <div style={{ ...cardStyle, textAlign: 'center', padding: '40px' }}>
+          <div style={spinnerStyle} />
+          <h3 style={{ margin: '20px 0 8px' }}>Verifying CNIC...</h3>
+          <p style={{ color: '#aaa', fontSize: '13px', margin: 0 }}>
+            Querying NADRA database for {inputCnic}
+          </p>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════ */}
+      {/* PHASE: idle ─────────────────────────────────────────────── */}
+      {/* ════════════════════════════════════════════════════════════ */}
+      {phase === 'idle' && (
+        <div style={cardStyle}>
+          <div style={{ textAlign: 'center', padding: '20px 0' }}>
+            <div style={{ fontSize: '72px', marginBottom: '16px', opacity: 0.9 }}>📷</div>
+            <h3 style={{ margin: '0 0 8px', fontSize: '18px' }}>Step 2: Face Verification</h3>
+            
+            <div style={{ 
+              background: 'rgba(0,176,155,0.1)', border: '1px solid rgba(0,176,155,0.3)', 
+              borderRadius: '8px', padding: '12px', margin: '0 auto 20px', maxWidth: '400px'
+            }}>
+              <p style={{ margin: 0, color: '#00b09b', fontSize: '13px', fontWeight: 600 }}>
+                ✅ CNIC Verified: {cnicData?.name}
+              </p>
+            </div>
+            
+            <p style={{ margin: '0 0 24px', color: '#aaa', fontSize: '14px', lineHeight: 1.6 }}>
+              Click the button below to open your webcam.<br />
+              Ensure good lighting and position your face clearly in frame.
+            </p>
+
+            <button
+              id="start-verification-btn"
+              onClick={startCamera}
+              style={{
+                ...btnStyle,
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              }}
+            >
+              🎥 Start Face Capture
+            </button>
+            
+            <div style={{ marginTop: '16px' }}>
+               <button onClick={handleFullReset} style={{ background: 'transparent', border: 'none', color: '#8ecae6', fontSize: '13px', cursor: 'pointer', textDecoration: 'underline' }}>
+                 Not {cnicData?.name}? Enter a different CNIC
+               </button>
+            </div>
           </div>
         </div>
       )}
@@ -586,7 +726,13 @@ const FaceVerification = ({ applicationId = null }) => {
               onClick={handleReset}
               style={{ ...btnStyle, background: 'linear-gradient(135deg, #667eea, #764ba2)', flex: 1 }}
             >
-              🔄 Verify Again
+              🔄 Retry Face Capture
+            </button>
+            <button
+              onClick={handleFullReset}
+              style={{ ...btnStyle, background: 'rgba(255,255,255,0.1)', flex: 1 }}
+            >
+              Change CNIC
             </button>
           </div>
         </div>
@@ -599,13 +745,23 @@ const FaceVerification = ({ applicationId = null }) => {
         <div style={{ ...cardStyle, textAlign: 'center', padding: '32px' }}>
           <div style={{ fontSize: '56px', marginBottom: '12px' }}>⚠️</div>
           <h3 style={{ color: '#f5515f', margin: '0 0 8px' }}>Verification Error</h3>
-          <p style={{ color: '#aaa', fontSize: '14px', margin: '0 0 20px' }}>{errorText}</p>
-          <button
-            onClick={handleReset}
-            style={{ ...btnStyle, background: 'linear-gradient(135deg, #667eea, #764ba2)' }}
-          >
-            Try Again
-          </button>
+          <p style={{ color: '#aaa', fontSize: '14px', margin: '0 0 20px', whiteSpace: 'pre-line' }}>{errorText}</p>
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <button
+              onClick={handleReset}
+              style={{ ...btnStyle, background: 'linear-gradient(135deg, #667eea, #764ba2)' }}
+            >
+              Try Again
+            </button>
+            {cnicData && (
+              <button
+                onClick={handleFullReset}
+                style={{ ...btnStyle, background: 'rgba(255,255,255,0.1)' }}
+              >
+                Start Over
+              </button>
+            )}
+          </div>
         </div>
       )}
 

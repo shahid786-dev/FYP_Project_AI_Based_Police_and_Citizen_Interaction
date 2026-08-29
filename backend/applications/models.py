@@ -12,7 +12,16 @@ class Application(models.Model):
         ('UNDER_REVIEW', 'Under Review'),
         ('FACE_VERIFIED', 'Face Verified'),
         ('CRIMINAL_CHECK', 'Criminal Check'),
+        ('CRIMINAL_CHECKED', 'Criminal Checked'),
+        ('STAFF_REVIEWED', 'Staff Reviewed'),
+        ('FORWARDED_TO_ADMIN', 'Forwarded to Admin'),
+        ('AUTHORITY_APPROVED', 'Authority Approved'),
+        ('AUTHORITY_REJECTED', 'Authority Rejected'),
+        ('STAFF_CONFIRMED', 'Staff Confirmed'),
         ('PAYMENT_PENDING', 'Payment Pending'),
+        ('PAYMENT_SUBMITTED', 'Payment Submitted'),
+        ('PAYMENT_VERIFIED', 'Payment Verified'),
+        ('PAYMENT_CONFIRMED', 'Payment Confirmed'),
         ('APPROVED', 'Approved'),
         ('REJECTED', 'Rejected'),
         ('COMPLETED', 'Completed'),
@@ -32,14 +41,29 @@ class Application(models.Model):
     purpose = models.TextField()
     current_address = models.TextField()
     nearest_station = models.CharField(max_length=100)
-    
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
-    notes = models.TextField(blank=True, null=True)
-    
+    applicant_province = models.CharField(max_length=50, blank=True, null=True)
+
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='PENDING')
+    notes = models.TextField(blank=True, null=True)  # general/rejection notes
+    staff_notes = models.TextField(blank=True, null=True)   # staff review remarks
+    admin_notes = models.TextField(blank=True, null=True)   # admin decision remarks
+
+    # Who handled this application at each stage
+    staff_reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='staff_reviewed_apps')
+    admin_decided_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admin_decided_apps')
+    staff_confirmed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='staff_confirmed_apps')
+    payment_verified_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='payment_verified_apps')
+
+    # Timestamps for each stage
+    staff_reviewed_at = models.DateTimeField(blank=True, null=True)
+    admin_decided_at = models.DateTimeField(blank=True, null=True)
+    staff_confirmed_at = models.DateTimeField(blank=True, null=True)
+    payment_verified_at = models.DateTimeField(blank=True, null=True)
+
     tracking_id = models.CharField(max_length=30, unique=True)
     face_confidence = models.FloatField(default=0.0)
     liveness_score = models.FloatField(default=0.0)
-    
+
     submitted_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -94,6 +118,37 @@ class Challan(models.Model):
 
     def __str__(self):
         return f"Challan {self.challan_number} for {self.application.tracking_id}"
+
+
+class Payment(models.Model):
+    """Tracks the actual payment transaction made by the citizen."""
+    PAYMENT_METHOD_CHOICES = (
+        ('CHALLAN', 'Bank Challan'),
+        ('EASYPAISA', 'EasyPaisa'),
+        ('JAZZCASH', 'JazzCash'),
+        ('BANK_TRANSFER', 'Internet Banking'),
+    )
+
+    application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name='payment_record')
+    challan = models.ForeignKey('Challan', on_delete=models.SET_NULL, null=True, blank=True, related_name='payment_record')
+    transaction_id = models.CharField(max_length=50, unique=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=650.00)
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES)
+    paid_at = models.DateTimeField(auto_now_add=True)
+    is_verified = models.BooleanField(default=False)
+    verified_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='verified_payments')
+    verified_at = models.DateTimeField(null=True, blank=True)
+    mobile_number = models.CharField(max_length=20, blank=True, null=True)
+
+    def save(self, *args, **kwargs):
+        if not self.transaction_id:
+            import uuid as uuid_module
+            self.transaction_id = f"TXN-{uuid_module.uuid4().hex[:10].upper()}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Payment {self.transaction_id} for {self.application.tracking_id}"
+
 
 class Certificate(models.Model):
     STATUS_CHOICES = (

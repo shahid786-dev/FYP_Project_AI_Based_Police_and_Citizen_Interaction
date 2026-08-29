@@ -194,8 +194,18 @@ export default function DigitalCertificatePage() {
               </div>
 
               <div className="text-center flex flex-col items-center">
-                <div className="w-20 h-20 bg-white border-2 border-[#003580]/20 rounded-xl flex items-center justify-center mb-2">
-                  <QrCode size={56} className="text-[#003580]" />
+                <div className="w-24 h-24 bg-white border-2 border-[#003580]/20 rounded-xl flex items-center justify-center mb-2 overflow-hidden p-1">
+                  {cert?.certificate_number ? (
+                    <img
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(
+                        window.location.origin + '/verify/certificate/' + cert.certificate_number
+                      )}`}
+                      alt="Verification QR"
+                      className="w-full h-full object-contain"
+                    />
+                  ) : (
+                    <QrCode size={56} className="text-[#003580]" />
+                  )}
                 </div>
                 <p className="text-[#003580]/50 text-xs">Scan to Verify</p>
               </div>

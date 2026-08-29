@@ -16,6 +16,13 @@ import TrackApplicationPage  from './pages/TrackApplicationPage';
 import DigitalCertificatePage from './pages/DigitalCertificatePage';
 import BlockchainExplorer    from './pages/BlockchainExplorer';
 import NotificationsPage     from './pages/NotificationsPage';
+import EmergencySOSPage      from './pages/EmergencySOSPage';
+import ReportCrimePage       from './pages/ReportCrimePage';
+import WomenSafetyPage       from './pages/WomenSafetyPage';
+import AccidentAssistancePage from './pages/AccidentAssistancePage';
+import AboutUsPage           from './pages/AboutUsPage';
+import { TermsPage, PrivacyPage } from './pages/LegalPages';
+import CriminalRecordsPage  from './pages/CriminalRecordsPage';
 import AIChatbot             from './components/AIChatbot';
 
 function ProtectedRoute({ children, allowedRoles }) {
@@ -39,10 +46,20 @@ export default function App() {
       <Routes>
         {/* ── Public ── */}
         <Route path="/"         element={<LandingPage />} />
-        <Route path="/login"    element={<LoginPage />} />
+        <Route path="/login"    element={<LoginPage roleType="citizen" />} />
+        <Route path="/login/admin" element={<LoginPage roleType="admin" />} />
+        <Route path="/login/staff" element={<LoginPage roleType="staff" />} />
         <Route path="/register" element={<RegistrationPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/emergency-sos" element={<EmergencySOSPage />} />
+        <Route path="/report-crime" element={<ReportCrimePage />} />
+        <Route path="/women-safety" element={<WomenSafetyPage />} />
+        <Route path="/accident-assistance" element={<AccidentAssistancePage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/about" element={<AboutUsPage />} />
         <Route path="/track"    element={<TrackApplicationPage />} />
+        <Route path="/criminal-records" element={<CriminalRecordsPage />} />
         <Route path="/blockchain" element={<BlockchainExplorer />} />
         <Route path="/verify/certificate/:certNumber" element={<DigitalCertificatePage />} />
 

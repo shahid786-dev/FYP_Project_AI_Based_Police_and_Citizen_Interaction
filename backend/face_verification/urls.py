@@ -8,6 +8,8 @@ All routes are authenticated (enforced in views via IsAuthenticated).
 from django.urls import path
 from .views import (
     LiveFaceVerifyView,
+    VerifyCNICView,
+    CnicBasedFaceVerifyView,
     VerificationHistoryView,
     VerificationReportDetailView,
     EmbeddingStoreStatusView,
@@ -16,11 +18,23 @@ from .views import (
 app_name = 'face_verification'
 
 urlpatterns = [
-    # POST — run live verification
+    # POST — run live verification (1:N — original endpoint)
     path(
         'verify/',
         LiveFaceVerifyView.as_view(),
         name='live-verify',
+    ),
+    # POST — Step 1: validate CNIC against NADRA database
+    path(
+        'verify-cnic/',
+        VerifyCNICView.as_view(),
+        name='verify-cnic',
+    ),
+    # POST — Step 2: 1:1 face verification for specific CNIC
+    path(
+        'verify-with-cnic/',
+        CnicBasedFaceVerifyView.as_view(),
+        name='verify-with-cnic',
     ),
     # GET — citizen's verification history
     path(

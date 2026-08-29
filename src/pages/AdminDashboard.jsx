@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useSelector } from 'react-redux';
 import {
   Users, Shield, FileText, AlertTriangle, CheckCircle, TrendingUp,
   Activity, Eye, Lock, Download, RefreshCw, Search, XCircle,
-  Clock, Database, BarChart2, Bell
+  Clock, Database, BarChart2, Bell, MapPin, Plus, Trash2, RefreshCcw,
+  UserCheck, UserX
 } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
+import { authorityAPI, policeAPI, applicationAPI } from '../api/apiClient';
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
@@ -49,29 +52,117 @@ const FRAUD_ALERTS = [
 ];
 
 export default function AdminDashboard() {
+  const { user } = useSelector(s => s.auth);
   const [activeSection, setActiveSection] = useState('overview');
+  const [staffList, setStaffList] = useState([]);
+  const [applications, setApplications] = useState([]);
+  const [loadingStaff, setLoadingStaff] = useState(false);
+  const [showAddStaff, setShowAddStaff] = useState(false);
+  const [newStaff, setNewStaff] = useState({ full_name: '', email: '', cnic: '', password: 'Staff@1234' });
+  const [staffError, setStaffError] = useState('');
+  const [savingStaff, setSavingStaff] = useState(false);
+
+  useEffect(() => {
+    fetchStaff();
+    fetchApplications();
+  }, []);
+
+  const fetchStaff = async () => {
+    setLoadingStaff(true);
+    try {
+      const res = await authorityAPI.listStaff();
+      setStaffList(res.data || []);
+    } catch { setStaffList([]); }
+    finally { setLoadingStaff(false); }
+  };
+
+  const fetchApplications = async () => {
+    try {
+      const res = await applicationAPI.list();
+      setApplications(res.data || []);
+    } catch { setApplications([]); }
+  };
+
+  const handleAddStaff = async () => {
+    setSavingStaff(true); setStaffError('');
+    try {
+      await authorityAPI.createStaff({ ...newStaff, role: 'POLICE_STAFF' });
+      setShowAddStaff(false);
+      setNewStaff({ full_name: '', email: '', cnic: '', password: 'Staff@1234' });
+      fetchStaff();
+    } catch (err) {
+      const data = err.response?.data;
+      setStaffError(data?.email?.[0] || data?.cnic?.[0] || data?.error || 'Failed to create staff.');
+    } finally { setSavingStaff(false); }
+  };
+
+  const handleDeleteStaff = async (id) => {
+    if (!window.confirm('Delete this staff member?')) return;
+    try {
+      await authorityAPI.deleteStaff(id);
+      fetchStaff();
+    } catch { alert('Could not delete staff.'); }
+  };
+
+  const handleToggleStaff = async (id) => {
+    try {
+      await authorityAPI.toggleStaff(id);
+      fetchStaff();
+    } catch { alert('Could not toggle staff status.'); }
+  };
+
+  const handleDecision = async (id, decision) => {
+    try {
+      const reason = decision === 'REJECT' ? prompt('Enter reason for rejection:') || 'Rejected by Admin' : 'Approved by Admin';
+      await authorityAPI.decide(id, { decision, reason });
+      fetchApplications();
+    } catch { alert('Error submitting decision.'); }
+  };
+
+  const provinceApps = applications.filter(a =>
+    !user?.province || a.applicant_province === user?.province
+  );
 
   return (
-    <DashboardLayout role="admin" userName="Shahid Ali">
+    <DashboardLayout role="admin" userName={user?.full_name || 'Admin'}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="font-display text-2xl font-bold text-white">Admin Control Center</h1>
-          <p className="text-white/50 text-sm mt-1">Full system oversight — PakVerify AI Platform</p>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-8 h-8 rounded-lg bg-purple-500/20 border border-purple-400/30 flex items-center justify-center">
+              <Shield size={16} className="text-purple-400" />
+            </div>
+            <span className="text-purple-400 text-xs font-bold uppercase tracking-widest">Super Admin Portal</span>
+            {user?.province && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-950 border border-cyan-500/30 text-cyan-400 text-xs">
+                <MapPin size={10} /> {user.province}
+              </span>
+            )}
+          </div>
+          <h1 className="font-display text-2xl font-bold text-white">
+            {user?.province ? `${user.province} Admin Panel` : 'Admin Control Center'}
+          </h1>
+          <p className="text-white/50 text-sm mt-1">
+            {user?.province
+              ? `Managing applications for ${user.province} province — ${provinceApps.length} total`
+              : 'Full system oversight — PakVerify AI Platform'}
+          </p>
         </div>
         <div className="flex gap-2">
-          <button className="btn-secondary flex items-center gap-2 text-sm py-2.5"><Download size={16}/>Export Report</button>
-          <button className="btn-primary flex items-center gap-2 text-sm py-2.5"><RefreshCw size={16}/>Refresh</button>
+          <button onClick={() => { fetchStaff(); fetchApplications(); }}
+            className="btn-secondary flex items-center gap-2 text-sm py-2.5">
+            <RefreshCw size={16} /> Refresh
+          </button>
         </div>
       </div>
 
       {/* Section tabs */}
       <div className="flex gap-2 mb-8 flex-wrap">
         {[
-          ['overview','Overview'], ['analytics','Analytics'], ['staff','Staff Management'],
-          ['fraud','Fraud Alerts'], ['logs','Audit Logs']
-        ].map(([id,label]) => (
+          ['overview', 'Overview'], ['applications', 'Applications'],
+          ['staff', 'Staff Management'], ['analytics', 'Analytics'], ['logs', 'Audit Logs']
+        ].map(([id, label]) => (
           <button key={id} onClick={() => setActiveSection(id)}
-            className={`px-4 py-2 rounded-xl text-sm font-medium transition ${activeSection===id ? 'bg-cyan-400/20 text-cyan-400 border border-cyan-400/30' : 'text-white/50 hover:text-white border border-transparent hover:border-white/10'}`}>
+            className={`px-4 py-2 rounded-xl text-sm font-medium transition ${activeSection === id ? 'bg-cyan-400/20 text-cyan-400 border border-cyan-400/30' : 'text-white/50 hover:text-white border border-transparent hover:border-white/10'}`}>
             {label}
           </button>
         ))}
@@ -207,38 +298,165 @@ export default function AdminDashboard() {
         </div>
       )}
 
+      {/* ── APPLICATIONS ── */}
+      {activeSection === 'applications' && (
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-white font-bold text-sm flex items-center gap-2">
+              <FileText size={16} className="text-amber-400" />
+              {user?.province ? `${user.province} Applications` : 'All Applications'} ({provinceApps.length})
+            </h2>
+            <button onClick={fetchApplications} className="text-xs text-cyan-400 hover:underline flex items-center gap-1">
+              <RefreshCcw size={12} /> Refresh
+            </button>
+          </div>
+          {provinceApps.length === 0 ? (
+            <div className="text-center py-8 text-slate-500 text-sm">
+              No applications found{user?.province ? ` for ${user.province}` : ''}.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {provinceApps.map(app => (
+                <div key={app.id} className="p-4 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between gap-3 text-xs">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-mono text-amber-400">{app.tracking_id}</span>
+                      <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] font-bold uppercase">{app.status}</span>
+                    </div>
+                    <p className="text-white font-semibold">{app.application_type}</p>
+                    <p className="text-slate-500 mt-0.5">{app.applicant?.full_name} · CNIC: <span className="font-mono">{app.applicant?.cnic}</span></p>
+                    {app.applicant_province && (
+                      <p className="text-cyan-400/70 text-[10px] mt-0.5 flex items-center gap-1"><MapPin size={9} />{app.applicant_province}</p>
+                    )}
+                  </div>
+                  <div className="text-right flex items-center gap-4 flex-shrink-0">
+                    <div className="text-slate-500 text-[10px] text-right">
+                      <p>{new Date(app.submitted_at).toLocaleDateString('en-PK')}</p>
+                    </div>
+                    {app.status === 'FORWARDED_TO_ADMIN' && (
+                      <div className="flex gap-2">
+                        <button onClick={() => handleDecision(app.id, 'APPROVE')}
+                          className="px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 hover:bg-green-600/40 font-bold border border-green-500/30 transition">
+                          Approve
+                        </button>
+                        <button onClick={() => handleDecision(app.id, 'REJECT')}
+                          className="px-3 py-1.5 rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/40 font-bold border border-red-500/30 transition">
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── STAFF MANAGEMENT ── */}
       {activeSection === 'staff' && (
         <div className="flex flex-col gap-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-white font-semibold">Police Staff ({STAFF.length} members)</h2>
-            <button className="btn-primary text-sm py-2 px-4">+ Add Staff</button>
+            <h2 className="text-white font-semibold flex items-center gap-2">
+              <Users size={18} className="text-blue-400" />
+              Police Staff ({staffList.length} members)
+            </h2>
+            <button onClick={() => { setShowAddStaff(true); setStaffError(''); }}
+              className="btn-primary text-sm py-2 px-4 flex items-center gap-2">
+              <Plus size={14} /> Add Staff
+            </button>
           </div>
-          <div className="grid md:grid-cols-2 gap-4">
-            {STAFF.map((s,i) => (
-              <div key={i} className="glass-card p-5 flex items-start gap-4">
-                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-700 flex items-center justify-center text-white font-bold text-lg flex-shrink-0">
-                  {s.name[0]}
+
+          {/* Add Staff Form */}
+          {showAddStaff && (
+            <div className="bg-slate-900 border border-cyan-500/20 rounded-3xl p-6">
+              <h3 className="text-white font-bold text-sm mb-4 flex items-center gap-2">
+                <Plus size={14} className="text-cyan-400" /> Add New Police Staff
+              </h3>
+              <div className="grid sm:grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="label-text">Full Name *</label>
+                  <input className="input-field" placeholder="DSP Muhammad Ali"
+                    value={newStaff.full_name} onChange={e => setNewStaff(s => ({ ...s, full_name: e.target.value }))} />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-white font-semibold">{s.name}</p>
-                    <span className={`status-badge border text-xs ${s.status==='active' ? 'status-approved' : 'status-rejected'}`}>{s.status}</span>
-                  </div>
-                  <p className="text-white/40 text-sm">{s.station}</p>
-                  <div className="flex gap-4 mt-3 text-xs">
-                    <div><span className="text-white/30">Applications: </span><span className="text-cyan-400 font-semibold">{s.apps}</span></div>
-                    <div><span className="text-white/30">Approved: </span><span className="text-green-400 font-semibold">{s.approved}</span></div>
-                    <div><span className="text-white/30">Rate: </span><span className="text-white/60 font-semibold">{Math.round(s.approved/s.apps*100)}%</span></div>
-                  </div>
+                <div>
+                  <label className="label-text">Email *</label>
+                  <input type="email" className="input-field" placeholder="officer@police.gov.pk"
+                    value={newStaff.email} onChange={e => setNewStaff(s => ({ ...s, email: e.target.value }))} />
                 </div>
-                <div className="flex flex-col gap-2">
-                  <button className="p-1.5 rounded-lg bg-cyan-400/10 text-cyan-400 hover:bg-cyan-400/20"><Eye size={14}/></button>
-                  <button className="p-1.5 rounded-lg bg-white/5 text-white/40 hover:bg-white/10"><Lock size={14}/></button>
+                <div>
+                  <label className="label-text">CNIC *</label>
+                  <input className="input-field font-mono" placeholder="35202-XXXXXXX-X"
+                    value={newStaff.cnic} onChange={e => setNewStaff(s => ({ ...s, cnic: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label-text">Password</label>
+                  <input className="input-field" placeholder="Default: Staff@1234"
+                    value={newStaff.password} onChange={e => setNewStaff(s => ({ ...s, password: e.target.value }))} />
                 </div>
               </div>
-            ))}
-          </div>
+              {staffError && (
+                <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm mb-4">
+                  <AlertTriangle size={14} />{staffError}
+                </div>
+              )}
+              <div className="flex gap-3">
+                <button onClick={handleAddStaff} disabled={savingStaff}
+                  className="btn-primary flex items-center gap-2 text-sm py-2.5">
+                  {savingStaff ? 'Saving...' : 'Create Staff Account'}
+                </button>
+                <button onClick={() => setShowAddStaff(false)} className="btn-secondary text-sm py-2.5">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {loadingStaff ? (
+            <div className="flex justify-center py-8">
+              <div className="w-6 h-6 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
+            </div>
+          ) : staffList.length === 0 ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center">
+              <Users size={40} className="text-slate-700 mx-auto mb-3" />
+              <p className="text-slate-400 text-sm">No police staff accounts yet.</p>
+              <button onClick={() => setShowAddStaff(true)} className="btn-primary mt-4 text-sm">
+                Add First Staff Member
+              </button>
+            </div>
+          ) : (
+            <div className="grid md:grid-cols-2 gap-4">
+              {staffList.map((s) => (
+                <div key={s.id} className="bg-slate-900 border border-slate-800 rounded-3xl p-5 flex items-start gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-700 flex items-center justify-center text-white font-bold text-lg flex-shrink-0">
+                    {s.full_name?.[0] || 'S'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-white font-semibold text-sm">{s.full_name}</p>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${s.is_active ? 'bg-green-950 text-green-400' : 'bg-red-950 text-red-400'}`}>
+                        {s.is_active ? 'ACTIVE' : 'INACTIVE'}
+                      </span>
+                    </div>
+                    <p className="text-slate-400 text-xs mt-0.5">{s.email}</p>
+                    <p className="text-slate-500 text-xs font-mono">{s.cnic}</p>
+                    {s.district && <p className="text-cyan-400/70 text-xs mt-0.5">{s.district}</p>}
+                    <div className="flex items-center gap-2 mt-3">
+                      <button onClick={() => handleToggleStaff(s.id)}
+                        className={`p-1.5 rounded-lg text-xs flex items-center gap-1 transition ${s.is_active ? 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20' : 'bg-green-500/10 text-green-400 hover:bg-green-500/20'}`}>
+                        {s.is_active ? <UserX size={13} /> : <UserCheck size={13} />}
+                        {s.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button onClick={() => handleDeleteStaff(s.id)}
+                        className="p-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition flex items-center gap-1 text-xs">
+                        <Trash2 size={13} /> Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

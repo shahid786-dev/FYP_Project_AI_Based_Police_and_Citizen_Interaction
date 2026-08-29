@@ -37,6 +37,7 @@ and NADRARecord rows may not exist for all of them, this command:
 """
 
 import os
+import re
 import pickle
 import logging
 from pathlib import Path
@@ -121,28 +122,49 @@ class Command(BaseCommand):
             ))
             return
 
-        # ── Collect image files ───────────────────────────────────────────
+        # ── Collect image files (prioritizing named cards first) ──────────
         image_exts = {'.png', '.jpg', '.jpeg', '.webp'}
-        all_images = sorted([
+        raw_images = [
             f for f in os.listdir(dataset_dir)
             if os.path.splitext(f)[1].lower() in image_exts
-        ])
+        ]
+
+        # Prioritize named files (e.g., Shahid58.png, Tahir76.png) at the front
+        named_images = sorted([f for f in raw_images if not f.startswith(('0','1','2','3','4','5','6','7','8','9'))], key=lambda x: x.lower())
+        numbered_images = sorted([f for f in raw_images if f.startswith(('0','1','2','3','4','5','6','7','8','9'))])
+        all_images = named_images + numbered_images
 
         if not all_images:
             raise CommandError(f'No image files found in: {dataset_dir}')
 
         if limit:
-            all_images = all_images[:limit]
+            # Ensure named images are always kept even with --limit
+            all_images = named_images + numbered_images[:max(0, limit - len(named_images))]
 
         total = len(all_images)
         self.stdout.write(self.style.HTTP_INFO(
-            f'\nFound {total} images in: {dataset_dir}'
+            f'\nFound {total} images in: {dataset_dir} (Named cards prioritized at top)'
         ))
 
-        # ── Load NADRA records for mapping ───────────────────────────────
-        self.stdout.write('Loading NADRA records from database...')
+        # ── Load NADRA records & registered citizen users ─────────────────
+        self.stdout.write('Loading NADRA records & citizen users from database...')
         nadra_map = self._build_nadra_map(dataset_dir)
-        self.stdout.write(f'   -> {len(nadra_map)} NADRA records loaded.\n')
+
+        # Get active citizen users to map their CNICs directly
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        citizen_cnic_map = {}
+        for u in User.objects.all():
+            if u.cnic:
+                lname = (u.full_name or '').lower()
+                if 'shahid' in lname:
+                    citizen_cnic_map['shahid58.png'] = u.cnic
+                elif 'tahir' in lname:
+                    citizen_cnic_map['tahir76.png'] = u.cnic
+                elif 'zulqarnain' in lname or 'zameer' in lname:
+                    citizen_cnic_map['zulqarnain48.png'] = u.cnic
+
+        self.stdout.write(f'   -> {len(nadra_map)} NADRA records & {len(citizen_cnic_map)} user CNIC mappings loaded.\n')
 
         # ── Import face processor ─────────────────────────────────────────
         try:
@@ -163,14 +185,40 @@ class Command(BaseCommand):
             # Map image to CNIC/person info
             record_info = nadra_map.get(filename)
             if record_info is None:
-                # Create synthetic CNIC from filename for demo purposes
-                num = int(os.path.splitext(filename)[0])
-                record_info = {
-                    'cnic': f'{num:013d}',          # 13-digit zero-padded
-                    'full_name': f'Citizen {num:04d}',
-                    'father_name': f'Father {num:04d}',
-                    'image_path': filename,
+                # ── Special named identity cards ────────────────────────────
+                NAMED_CARD_MAP = {
+                    'tahir76.png':       {'cnic': '35202-7600001-1', 'full_name': 'Tahir Hussain',        'father_name': 'Muhammad Hussain'},
+                    'shahid58.png':      {'cnic': '35202-5800002-3', 'full_name': 'Shahid Ali',           'father_name': 'Ali Ahmad'},
+                    'zulqarnain48.png':  {'cnic': '35202-4800003-5', 'full_name': 'Zulqarnain Ahmed',     'father_name': 'Ahmed Zaman'},
+                    # 9 newly added identity cards
+                    'mudasirali.png':    {'cnic': '42301-1000001-1', 'full_name': 'Mudasir Ali',          'father_name': 'Ali Muhammad'},
+                    'mudasirshah.png':   {'cnic': '42301-1000002-2', 'full_name': 'Mudasir Shah',         'father_name': 'Shah Muhammad'},
+                    'hamid.png':         {'cnic': '42301-1000003-3', 'full_name': 'Hamid Khan',           'father_name': 'Amir Khan'},
+                    'siraj.png':         {'cnic': '42301-1000004-4', 'full_name': 'Siraj ul Haq',         'father_name': 'Haq Nawaz'},
+                    'karan.png':         {'cnic': '42301-1000005-5', 'full_name': 'Karan Das',            'father_name': 'Roshan Das'},
+                    'haroon.png':        {'cnic': '42301-1000006-6', 'full_name': 'Haroon Rashid',        'father_name': 'Abdul Rashid'},
+                    'abdulmutali.png':   {'cnic': '42301-1000007-7', 'full_name': 'Abdul Mutali',         'father_name': 'Ghulam Mutali'},
+                    'eman.png':          {'cnic': '42301-1000008-8', 'full_name': 'Eman Fatima',          'father_name': 'Fateh Muhammad'},
+                    'farhan.png':        {'cnic': '42301-1000009-9', 'full_name': 'Farhan Iqbal',         'father_name': 'Iqbal Ahmed'},
                 }
+                lower_fname = filename.lower()
+                if lower_fname in NAMED_CARD_MAP:
+                    info = NAMED_CARD_MAP[lower_fname]
+                    record_info = {
+                        'cnic':        info['cnic'],
+                        'full_name':   info['full_name'],
+                        'father_name': info['father_name'],
+                        'image_path':  filename,
+                    }
+                else:
+                    # Generic synthetic CNIC from filename number for demo purposes
+                    num = int(os.path.splitext(filename)[0]) if os.path.splitext(filename)[0].isdigit() else hash(filename) % 9999999
+                    record_info = {
+                        'cnic': f'{num:013d}',
+                        'full_name': f'Citizen {num:04d}',
+                        'father_name': f'Father {num:04d}',
+                        'image_path': filename,
+                    }
 
             cnic = record_info['cnic']
 
@@ -178,13 +226,22 @@ class Command(BaseCommand):
                 embedding, meta = extract_embedding_from_path(
                     image_path, check_quality=False
                 )
-                embeddings[cnic] = {
+                entry = {
                     'embedding':   embedding,
                     'full_name':   record_info['full_name'],
                     'father_name': record_info['father_name'],
                     'image_path':  filename,
                     'model_used':  meta.get('model_used', 'unknown'),
                 }
+                embeddings[cnic] = entry
+
+                # If this is a named card, ALSO store under any matching registered user CNIC!
+                lower_fname = filename.lower()
+                if lower_fname in citizen_cnic_map:
+                    user_cnic = citizen_cnic_map[lower_fname]
+                    if user_cnic != cnic:
+                        embeddings[user_cnic] = entry.copy()
+                        embeddings[user_cnic]['cnic'] = user_cnic
 
             except Exception as exc:
                 errors += 1
@@ -250,36 +307,92 @@ class Command(BaseCommand):
         Build a mapping:  filename → {cnic, full_name, father_name, image_path}
 
         Priority:
-        1. NADRARecord.face_image — if the field stores the filename or path
-        2. Match by image number → sequential CNIC assignment from ordered records
-        3. Fallback: synthetic CNIC (handled in main loop)
+        1. Identity card CSV (Id_Card_Dataset_Text/identity_card_cnic_dataset.csv)
+           — rows with ocr_status=success and a non-empty cnic are used first.
+        2. NADRARecord.face_image — if the field stores the filename or path.
+        3. Match by image number → sequential CNIC assignment from ordered records.
+        4. Fallback: synthetic CNIC (handled in main loop).
         """
+        import csv as _csv
         mapping = {}
 
+        # ── Strategy 1: CSV-based CNIC lookup (primary source) ────────────
+        # The CSV at Id_Card_Dataset_Text/identity_card_cnic_dataset.csv maps
+        # image filenames to CNICs that were extracted via OCR.
+        # Only rows with ocr_status=success and a non-empty cnic are used.
+        project_root = settings.BASE_DIR.parent  # one level above backend/
+        csv_path = os.path.join(
+            str(project_root),
+            'Id_Card_Dataset_Text',
+            'identity_card_cnic_dataset.csv',
+        )
+
+        def _normalize_cnic(raw: str) -> str:
+            """Strip whitespace/dashes/spaces for comparison; keep original for storage."""
+            return re.sub(r'[^\d]', '', raw.strip())
+
+        if os.path.isfile(csv_path):
+            try:
+                with open(csv_path, newline='', encoding='utf-8-sig') as f:
+                    reader = _csv.DictReader(f)
+                    csv_rows_loaded = 0
+                    for row in reader:
+                        ocr_status = row.get('ocr_status', '').strip().lower()
+                        raw_cnic   = row.get('cnic', '').strip()
+                        img_fname  = row.get('image_filename', '').strip()
+
+                        if ocr_status != 'success' or not raw_cnic or not img_fname:
+                            continue  # skip failed-OCR or empty rows
+
+                        # Normalise CNIC: use as-is if already formatted XXXXX-XXXXXXX-X,
+                        # otherwise keep the raw string from the CSV (do NOT mutate)
+                        stored_cnic = raw_cnic  # preserve original formatting
+
+                        mapping[img_fname] = {
+                            'cnic':        stored_cnic,
+                            'full_name':   f'Citizen ({stored_cnic})',
+                            'father_name': 'N/A',
+                            'image_path':  img_fname,
+                        }
+                        csv_rows_loaded += 1
+
+                self.stdout.write(
+                    f'   -> CSV CNIC source: {csv_rows_loaded} entries loaded from {csv_path}'
+                )
+            except Exception as exc:
+                self.stdout.write(self.style.WARNING(
+                    f'   Could not read identity card CSV: {exc}'
+                ))
+        else:
+            self.stdout.write(self.style.WARNING(
+                f'   Identity card CSV not found at {csv_path} — falling back to DB/synthetic mapping.'
+            ))
+
+        # ── Strategy 2 & 3: NADRARecord DB (fills any gaps not covered by CSV) ─
         try:
             from nadra.models import NADRARecord
 
-            # Strategy 1: face_image field contains the filename
             records = NADRARecord.objects.filter(is_active=True).order_by('id')
+
+            # Strategy 2: face_image field contains the filename
             for record in records:
                 if record.face_image:
                     fname = os.path.basename(str(record.face_image))
-                    mapping[fname] = {
-                        'cnic':        record.cnic,
-                        'full_name':   record.full_name,
-                        'father_name': record.father_name,
-                        'image_path':  fname,
-                    }
+                    if fname not in mapping:  # CSV takes priority
+                        mapping[fname] = {
+                            'cnic':        record.cnic,
+                            'full_name':   record.full_name,
+                            'father_name': record.father_name,
+                            'image_path':  fname,
+                        }
 
-            # Strategy 2: match records to sorted image files by position
-            if len(mapping) < 10:  # few direct matches → use positional mapping
+            # Strategy 3: positional mapping (only if very few CSV/DB matches)
+            if len(mapping) < 10:
                 image_files = sorted([
                     f for f in os.listdir(dataset_dir)
                     if os.path.splitext(f)[1].lower() in {'.png', '.jpg', '.jpeg'}
                 ])
-                for idx, (record, fname) in enumerate(
-                    zip(records, image_files)
-                ):
+                for record, fname in zip(records, image_files):
                     if fname not in mapping:
                         mapping[fname] = {
                             'cnic':        record.cnic,

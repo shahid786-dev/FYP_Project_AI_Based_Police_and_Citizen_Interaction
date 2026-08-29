@@ -10,10 +10,14 @@ const SERVICE_TYPES = [
   'Character Certificate','Tenant Verification','Employee Verification',
   'General Police Verification','Arms License Verification','Passport Police Clearance',
 ];
-const STATIONS = [
-  'Gulberg Police Station, Lahore','DHA Phase 5 Station, Lahore','Model Town Station, Lahore',
-  'Cantt Police Station, Lahore','Sadar Police Station, Karachi','F-8 Police Station, Islamabad',
-];
+const PROVINCE_STATIONS = {
+  'Punjab': ['Gulberg Police Station, Lahore', 'DHA Phase 5 Station, Lahore', 'Model Town Station, Lahore', 'Cantt Police Station, Lahore', 'Civil Lines, Faisalabad', 'Sadar Police Station, Multan'],
+  'Sindh': ['Clifton Police Station, Karachi', 'Sadar Police Station, Karachi', 'Defence Station, Karachi', 'Latifabad Station, Hyderabad', 'Sukkur Central Station'],
+  'KPK': ['University Town Station, Peshawar', 'Cantt Station, Peshawar', 'Hayatabad Station, Peshawar', 'Abbottabad Central Station', 'Mardan City Station'],
+  'Balochistan': ['Civil Lines, Quetta', 'Cantonment Station, Quetta', 'Gwadar Port Station', 'Khuzdar City Station'],
+  'Gilgit-Baltistan': ['Gilgit City Station', 'Skardu Central Station', 'Hunza Police Station'],
+  'AJK': ['Muzaffarabad City Station', 'Mirpur Central Station', 'Rawalakot Station']
+};
 
 function FileUploadBox({ label, accept, required, onFile }) {
   const [file, setFile] = useState(null);
@@ -34,7 +38,7 @@ function FileUploadBox({ label, accept, required, onFile }) {
             <p className="text-green-400 text-sm font-medium truncate">{file.name}</p>
             <p className="text-white/40 text-xs">{(file.size/1024).toFixed(1)} KB</p>
           </div>
-          <button onClick={()=>{setFile(null);onFile?.(null);}} className="text-white/30 hover:text-white"><X size={16}/></button>
+          <button type="button" onClick={()=>{setFile(null);onFile?.(null);}} className="text-white/30 hover:text-white"><X size={16}/></button>
         </div>
       )}
     </div>
@@ -130,10 +134,17 @@ export default function VerificationRequestPage() {
           <div className="flex flex-col gap-6">
             <div className="glass-card p-6">
               <h2 className="text-white font-semibold mb-4 flex items-center gap-2"><MapPin size={18} className="text-cyan-400"/>Police Station</h2>
-              <select className="input-field" value={form.station} onChange={e=>set('station',e.target.value)} required>
-                <option value="">Select Station</option>
-                {STATIONS.map(s=><option key={s}>{s}</option>)}
-              </select>
+              {user?.province ? (
+                <select className="input-field" value={form.station} onChange={e=>set('station',e.target.value)} required>
+                  <option value="">Select Station in {user.province}</option>
+                  {(PROVINCE_STATIONS[user.province] || PROVINCE_STATIONS['Punjab']).map(s=><option key={s}>{s}</option>)}
+                </select>
+              ) : (
+                <select className="input-field" value={form.station} onChange={e=>set('station',e.target.value)} required>
+                  <option value="">Select Nearest Police Station</option>
+                  {Object.values(PROVINCE_STATIONS).flat().map(s=><option key={s}>{s}</option>)}
+                </select>
+              )}
             </div>
             <div className="glass-card p-6">
               <h2 className="text-white font-semibold mb-3 flex items-center gap-2"><Shield size={18} className="text-cyan-400"/>Fee</h2>
@@ -149,7 +160,7 @@ export default function VerificationRequestPage() {
             <button type="submit" disabled={loading} className="btn-primary flex items-center justify-center gap-2 w-full py-4">
               {loading
                 ? <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
-                : <><span>Submit & Proceed</span><ChevronRight size={18}/></>}
+                : <><span>Continue to Face Verification</span><ChevronRight size={18}/></>}
             </button>
           </div>
         </div>

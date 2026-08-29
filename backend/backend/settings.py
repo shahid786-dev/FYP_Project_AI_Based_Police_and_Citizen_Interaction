@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'chatbot.apps.ChatbotConfig',
     'audit.apps.AuditConfig',
     'face_verification.apps.FaceVerificationConfig',  # AI Face Verification Module
+    'incidents.apps.IncidentsConfig',
 ]
 
 MIDDLEWARE = [

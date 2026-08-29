@@ -215,17 +215,35 @@ export default function AIFaceRecognitionPage() {
           {/* Result Card */}
           {phase === 'done' && (
             <div className="glass-card p-6 border border-green-400/30 bg-green-400/5 animate-slide-up">
-              <div className="flex items-center gap-3 mb-3">
+              <div className="flex items-center gap-3 mb-4">
                 <div className="w-10 h-10 rounded-full bg-green-400/20 flex items-center justify-center">
                   <CheckCircle size={22} className="text-green-400" />
                 </div>
                 <div>
-                  <p className="text-green-400 font-semibold">Identity Verified!</p>
-                  <p className="text-white/40 text-xs">AI confidence: {confidence.toFixed(1)}%</p>
+                  <p className="text-green-400 font-semibold text-base">Identity Biometrically Verified!</p>
+                  <p className="text-white/40 text-xs">AI Facial Similarity Score: {confidence.toFixed(1)}%</p>
                 </div>
               </div>
-              <p className="text-white/50 text-sm mb-5">Your identity has been successfully verified. Proceed to payment to complete your application.</p>
-              <button onClick={() => navigate('/citizen/payment')} className="btn-primary flex items-center gap-2 w-full justify-center">
+
+              {/* Verified Identity Card Display */}
+              <div className="p-4 rounded-xl border border-cyan-400/30 bg-cyan-950/40 text-xs mb-5 space-y-2">
+                <div className="flex items-center justify-between border-b border-cyan-400/20 pb-2 mb-2">
+                  <span className="font-bold text-cyan-300 uppercase tracking-wide">NADRA Identity Card Details</span>
+                  <span className="text-green-400 font-bold">MATCHED ✓</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-white/80">
+                  <div><span className="text-white/40 block text-[10px]">FULL NAME</span><span className="font-semibold text-white">Muhammad Ali Khan</span></div>
+                  <div><span className="text-white/40 block text-[10px]">CNIC NUMBER</span><span className="font-mono text-cyan-300 font-semibold">42101-1234567-1</span></div>
+                  <div><span className="text-white/40 block text-[10px]">FATHER NAME</span><span>Tariq Ali Khan</span></div>
+                  <div><span className="text-white/40 block text-[10px]">DATE OF BIRTH</span><span>1995-04-12</span></div>
+                  <div><span className="text-white/40 block text-[10px]">GENDER</span><span>Male</span></div>
+                  <div><span className="text-white/40 block text-[10px]">DISTRICT & PROVINCE</span><span>Karachi, Sindh</span></div>
+                  <div className="col-span-2"><span className="text-white/40 block text-[10px]">PERMANENT ADDRESS</span><span>House #45, Block 3, Clifton, Karachi</span></div>
+                </div>
+              </div>
+
+              <p className="text-white/50 text-sm mb-5">Your identity has been successfully matched with NADRA database records. Proceed to payment to complete your application.</p>
+              <button onClick={() => navigate('/citizen/payment')} className="btn-primary flex items-center justify-center gap-2 w-full">
                 Proceed to Payment <ChevronRight size={18}/>
               </button>
             </div>

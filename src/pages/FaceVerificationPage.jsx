@@ -15,7 +15,15 @@ const FaceVerificationPage = () => {
   const [history, setHistory]   = useState([]);
   const [histLoading, setHL]    = useState(true);
 
-  const token = localStorage.getItem('accessToken');
+  const getAuthToken = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
+      return stored?.token || '';
+    } catch {
+      return '';
+    }
+  };
+  const token = getAuthToken();
 
   const fetchHistory = () => {
     if (!token) return;

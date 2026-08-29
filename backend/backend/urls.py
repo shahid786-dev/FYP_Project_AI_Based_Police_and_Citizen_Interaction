@@ -17,6 +17,7 @@ urlpatterns = [
     path('api/chatbot/', include('chatbot.urls')),
     path('api/audit/', include('audit.urls')),
     path('api/face-verify/', include('face_verification.urls')),
+    path('api/incidents/', include('incidents.urls')),
     
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

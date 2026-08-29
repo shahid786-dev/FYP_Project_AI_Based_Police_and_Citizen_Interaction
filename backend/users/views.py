@@ -1,6 +1,7 @@
 from rest_framework import status, permissions, generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.db.models import Q
@@ -29,6 +30,8 @@ def get_tokens_for_user(user):
         'cnic': user.cnic
     }
 
+from .otp_service import get_otp_service
+
 class RegisterView(generics.CreateAPIView):
     serializer_class = UserRegistrationSerializer
     permission_classes = [permissions.AllowAny]
@@ -38,15 +41,13 @@ class RegisterView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         
-        # Simulate SMS OTP printout
-        print(f"\n==================================================")
-        print(f"SMS GATEWAY: Registration OTP for CNIC {user.cnic} is: {user.otp_code}")
-        print(f"==================================================\n")
+        otp_service = get_otp_service()
+        otp_res = otp_service.generate_and_send(user, purpose="registration")
         
         return Response({
-            'message': 'Citizen registered successfully. OTP sent for verification.',
+            'message': 'Citizen registered successfully. ' + otp_res['message'],
             'cnic': user.cnic,
-            'otp_code': user.otp_code # Return OTP code in dev response for ease of front-end prototype testing
+            'otp_code': otp_res.get('otp_code')
         }, status=status.HTTP_201_CREATED)
 
 class LoginView(APIView):
@@ -63,33 +64,33 @@ class LoginView(APIView):
         try:
             user = User.objects.get(Q(cnic=cnic_or_email) | Q(email=cnic_or_email))
         except User.DoesNotExist:
+            print(f"DEBUG_LOGIN: User not found for '{cnic_or_email}'")
             return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
             
         # Check lockout
         if user.check_lockout():
+            print(f"DEBUG_LOGIN: User '{cnic_or_email}' is locked out")
             return Response({
-                'error': f'Account locked due to too many failed attempts. Try again later.'
+                'error': 'Account locked due to too many failed attempts. Try again later.'
             }, status=status.HTTP_403_FORBIDDEN)
             
         if not user.check_password(password):
+            print(f"DEBUG_LOGIN: Password mismatch for user '{cnic_or_email}'")
             user.increment_failed_attempts()
             return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
             
+        print(f"DEBUG_LOGIN: Login successful for user '{cnic_or_email}'")
         # Success: reset failed attempts, generate OTP
         user.failed_login_attempts = 0
-        user.otp_code = str(random.randint(100000, 999999))
-        user.otp_expiry = timezone.now() + timezone.timedelta(minutes=10)
         user.save()
         
-        # Simulate SMS gateway
-        print(f"\n==================================================")
-        print(f"SMS GATEWAY: Login OTP for CNIC {user.cnic} is: {user.otp_code}")
-        print(f"==================================================\n")
+        otp_service = get_otp_service()
+        otp_res = otp_service.generate_and_send(user, purpose="login")
         
         return Response({
-            'message': 'OTP code sent to your registered mobile number.',
+            'message': 'OTP sent successfully. ' + otp_res['message'],
             'cnic': user.cnic,
-            'otp_code': user.otp_code # Return OTP in response for prototype simulation
+            'otp_code': otp_res.get('otp_code')
         }, status=status.HTTP_200_OK)
 
 class VerifyOtpView(APIView):
@@ -102,24 +103,59 @@ class VerifyOtpView(APIView):
         cnic = serializer.validated_data['cnic']
         otp_code = serializer.validated_data['otp_code']
         
+        # Support lookup by CNIC or email so staff can verify OTP with either
         try:
-            user = User.objects.get(cnic=cnic)
+            user = User.objects.get(Q(cnic=cnic) | Q(email=cnic))
         except User.DoesNotExist:
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
             
-        # Validate OTP
-        if user.otp_code != otp_code or (user.otp_expiry and timezone.now() > user.otp_expiry):
-            # Fallback bypass: allow 123456 as bypass for local convenience testing
-            if otp_code != '123456':
-                return Response({'error': 'Invalid or expired OTP'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Reset OTP and issue tokens
-        user.otp_code = None
-        user.otp_expiry = None
-        user.save()
+        # Validate OTP using service abstraction
+        otp_service = get_otp_service()
+        is_valid, msg = otp_service.verify(user, otp_code)
+        if not is_valid:
+            return Response({'error': msg}, status=status.HTTP_400_BAD_REQUEST)
         
         tokens = get_tokens_for_user(user)
         return Response(tokens, status=status.HTTP_200_OK)
+
+class FaceLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        cnic = (request.data.get('cnic') or '').strip()
+        live_image_file = request.FILES.get('live_image')
+
+        if not cnic or not live_image_file:
+            return Response({'error': 'CNIC and live_image are required for face login.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(cnic=cnic)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if user.check_lockout():
+            return Response({'error': 'Account locked due to too many failed attempts.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from face_verification.service import FaceVerificationService
+        image_bytes = live_image_file.read()
+        report = FaceVerificationService.verify_with_cnic(
+            cnic=cnic,
+            image_bytes=image_bytes,
+            citizen=user,
+            application=None,
+            ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+        )
+
+        if report.is_verified:
+            user.failed_login_attempts = 0
+            user.save()
+            tokens = get_tokens_for_user(user)
+            return Response(tokens, status=status.HTTP_200_OK)
+        else:
+            user.increment_failed_attempts()
+            return Response({'error': 'Face verification failed.'}, status=status.HTTP_401_UNAUTHORIZED)
 
 class PasswordResetRequestView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -136,19 +172,13 @@ class PasswordResetRequestView(APIView):
         except User.DoesNotExist:
             return Response({'error': 'No matching registered Citizen found with given CNIC and Email.'}, status=status.HTTP_404_NOT_FOUND)
             
-        otp_code = str(random.randint(100000, 999999))
-        user.otp_code = otp_code
-        user.otp_expiry = timezone.now() + timezone.timedelta(minutes=10)
-        user.save()
-        
-        print(f"\n==================================================")
-        print(f"PASSWORD RESET OTP for Citizen {user.full_name} ({user.cnic}): {otp_code}")
-        print(f"==================================================\n")
+        otp_service = get_otp_service()
+        otp_res = otp_service.generate_and_send(user, purpose="password_reset")
         
         return Response({
-            'message': 'Password reset OTP sent to your registered contact channel.',
+            'message': 'Password reset OTP sent. ' + otp_res['message'],
             'cnic': user.cnic,
-            'otp_code': otp_code # Included for prototype demo testing
+            'otp_code': otp_res.get('otp_code')
         }, status=status.HTTP_200_OK)
 
 class PasswordResetConfirmView(APIView):
@@ -167,16 +197,15 @@ class PasswordResetConfirmView(APIView):
         except User.DoesNotExist:
             return Response({'error': 'Citizen record not found.'}, status=status.HTTP_404_NOT_FOUND)
             
-        if user.otp_code != otp_code or (user.otp_expiry and timezone.now() > user.otp_expiry):
-            if otp_code != '123456':
-                return Response({'error': 'Invalid or expired OTP code.'}, status=status.HTTP_400_BAD_REQUEST)
+        otp_service = get_otp_service()
+        is_valid, msg = otp_service.verify(user, otp_code)
+        if not is_valid:
+            return Response({'error': msg}, status=status.HTTP_400_BAD_REQUEST)
                 
         user.set_password(new_password)
         user.failed_login_attempts = 0
         user.is_locked = False
         user.lock_time = None
-        user.otp_code = None
-        user.otp_expiry = None
         user.save()
         
         return Response({

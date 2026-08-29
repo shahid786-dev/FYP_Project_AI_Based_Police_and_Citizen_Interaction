@@ -12,7 +12,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 
-from .models import Application, Document, Challan, Certificate
+from .models import Application, Document, Challan, Certificate, Payment
 from .serializers import ApplicationSerializer, ApplicationCreateSerializer, DocumentSerializer
 
 from blockchain.service import BlockchainService
@@ -65,20 +65,29 @@ class ApplicationListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        if user.role in ['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']:
+        if user.role == 'SUPER_ADMIN':
+            # Province-scoped admins see their own province's applications
+            if user.province:
+                return Application.objects.filter(applicant_province=user.province).order_by('-submitted_at')
+            return Application.objects.all().order_by('-submitted_at')
+        if user.role in ['POLICE_STAFF', 'POLICE_AUTHORITY']:
             return Application.objects.all().order_by('-submitted_at')
         return Application.objects.filter(applicant=user).order_by('-submitted_at')
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        application = serializer.save(applicant=request.user)
+        application = serializer.save(
+            applicant=request.user,
+            applicant_province=request.user.province or ''
+        )
 
         BlockchainService.add_block(
             'APPLICATION_SUBMIT', str(application.id), request.user.cnic,
             {'tracking_id': application.tracking_id,
              'application_type': application.application_type,
-             'purpose': application.purpose},
+             'purpose': application.purpose,
+             'province': application.applicant_province},
         )
         notify_application_submitted(request.user, application.tracking_id)
 
@@ -238,26 +247,170 @@ class ProcessPaymentView(APIView):
         if not payment_method:
             return Response({'error': 'Payment method is required.'}, status=400)
 
+        mobile_number = request.data.get('mobile_number', '')
+
+        # Create Payment record
+        payment = Payment.objects.create(
+            application=application,
+            challan=challan,
+            amount=challan.amount,
+            payment_method=payment_method,
+            mobile_number=mobile_number
+        )
+
         challan.status         = 'PAID'
         challan.paid_at        = timezone.now()
         challan.payment_method = payment_method
         challan.save()
 
-        application.status = 'PAYMENT_CONFIRMED'
+        application.status = 'PAYMENT_SUBMITTED'
         application.save()
 
         BlockchainService.add_block(
-            'PAYMENT_CONFIRM', str(application.id), request.user.cnic,
-            {'challan_number': challan.challan_number, 'payment_method': payment_method,
+            'PAYMENT_SUBMIT', str(application.id), request.user.cnic,
+            {'transaction_id': payment.transaction_id, 'payment_method': payment_method,
              'amount': str(challan.amount), 'tracking_id': application.tracking_id},
         )
-        notify_payment_confirmed(request.user, application.tracking_id)
+        
+        # We don't notify payment confirmed yet, wait for staff verification
 
-        return Response({'message': 'Payment confirmed.', 'challan_status': 'PAID',
-                         'application_status': application.status})
+        return Response({'message': 'Payment submitted for verification.', 'challan_status': 'PAID',
+                         'application_status': application.status, 'transaction_id': payment.transaction_id})
 
 
-# ─── Staff — Remark + Recommend ───────────────────────────────────────────────
+# ─── Staff — Workflow Views ───────────────────────────────────────────────────
+
+class StaffForwardView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    # Statuses that staff can forward to admin (any pre-admin status)
+    FORWARDABLE_STATUSES = [
+        'PENDING', 'UNDER_REVIEW', 'FACE_VERIFIED', 'CRIMINAL_CHECK',
+        'CRIMINAL_CHECKED', 'STAFF_REVIEWED',
+    ]
+
+    def post(self, request, pk):
+        if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
+            return Response({'error': 'Unauthorized'}, status=403)
+        try:
+            application = Application.objects.get(pk=pk)
+        except Application.DoesNotExist:
+            return Response({'error': 'Not found'}, status=404)
+
+        if application.status not in self.FORWARDABLE_STATUSES:
+            return Response(
+                {'error': f'Cannot forward application in status: {application.status}. It must be reviewed before forwarding.'},
+                status=400
+            )
+
+        remarks = request.data.get('remarks', '')
+
+        application.staff_notes = remarks
+        application.staff_reviewed_by = request.user
+        application.staff_reviewed_at = timezone.now()
+        application.status = 'FORWARDED_TO_ADMIN'
+        application.save()
+
+        BlockchainService.add_block(
+            'STAFF_FORWARD', str(application.id), request.user.cnic,
+            {'remarks': remarks, 'tracking_id': application.tracking_id},
+        )
+
+        return Response({'message': 'Application forwarded to admin.', 'status': application.status})
+
+
+class StaffConfirmView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
+            return Response({'error': 'Unauthorized'}, status=403)
+        try:
+            application = Application.objects.get(pk=pk)
+        except Application.DoesNotExist:
+            return Response({'error': 'Not found'}, status=404)
+
+        if application.status != 'AUTHORITY_APPROVED':
+            return Response({'error': 'Application must be authority approved first.'}, status=400)
+
+        application.staff_confirmed_by = request.user
+        application.staff_confirmed_at = timezone.now()
+        application.status = 'STAFF_CONFIRMED'
+        application.save()
+
+        # Generate challan upon staff confirmation
+        _generate_challan(application)
+
+        BlockchainService.add_block(
+            'STAFF_CONFIRM', str(application.id), request.user.cnic,
+            {'tracking_id': application.tracking_id},
+        )
+
+        return Response({'message': 'Application confirmed and challan generated.', 'status': application.status})
+
+
+class StaffVerifyPaymentView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
+            return Response({'error': 'Unauthorized'}, status=403)
+        try:
+            application = Application.objects.get(pk=pk)
+        except Application.DoesNotExist:
+            return Response({'error': 'Application not found'}, status=404)
+
+        # Safely access the payment record (OneToOneField raises RelatedObjectDoesNotExist)
+        try:
+            payment = application.payment_record
+        except Exception:
+            return Response({'error': 'Payment record not found. Citizen has not submitted payment yet.'}, status=404)
+
+        if application.status != 'PAYMENT_SUBMITTED':
+            return Response(
+                {'error': f'Application must be in PAYMENT_SUBMITTED state, currently: {application.status}'},
+                status=400
+            )
+
+        payment.is_verified = True
+        payment.verified_by = request.user
+        payment.verified_at = timezone.now()
+        payment.save()
+
+        application.payment_verified_by = request.user
+        application.payment_verified_at = timezone.now()
+        application.status = 'PAYMENT_VERIFIED'
+        application.save()
+
+        BlockchainService.add_block(
+            'PAYMENT_VERIFY', str(application.id), request.user.cnic,
+            {'transaction_id': payment.transaction_id, 'tracking_id': application.tracking_id},
+        )
+        notify_payment_confirmed(application.applicant, application.tracking_id)
+
+        # Auto-issue certificate after payment is verified
+        try:
+            application.status = 'PAYMENT_CONFIRMED'
+            application.save()
+            from applications.certificate_service import CertificateService
+            cert = CertificateService.generate_certificate(application)
+            notify_certificate_ready(
+                application.applicant, application.tracking_id, cert.certificate_number
+            )
+            return Response({
+                'message': 'Payment verified and certificate issued successfully.',
+                'status': application.status,
+                'certificate_number': cert.certificate_number,
+            })
+        except Exception as cert_err:
+            # If certificate generation fails, still return success for payment verification
+            return Response({
+                'message': f'Payment verified. Certificate generation pending: {str(cert_err)}',
+                'status': application.status,
+            })
+
+
+# ─── Staff — Remark + Recommend (Legacy/Optional) ────────────────────────────
 
 class StaffRemarkView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -307,6 +460,10 @@ class AuthorityDecisionView(APIView):
         if decision not in ['APPROVE', 'REJECT']:
             return Response({'error': 'decision must be APPROVE or REJECT'}, status=400)
 
+        application.admin_notes = reason
+        application.admin_decided_by = request.user
+        application.admin_decided_at = timezone.now()
+
         if decision == 'APPROVE':
             application.status = 'AUTHORITY_APPROVED'
             application.save()
@@ -315,8 +472,6 @@ class AuthorityDecisionView(APIView):
                 {'tracking_id': application.tracking_id, 'reason': reason},
             )
             notify_authority_decision(application.applicant, application.tracking_id, True)
-            # Generate challan now
-            _generate_challan(application)
         else:
             application.status = 'AUTHORITY_REJECTED'
             application.notes  = reason
@@ -330,26 +485,32 @@ class AuthorityDecisionView(APIView):
         return Response({'message': f'Application {decision}D.', 'status': application.status})
 
 
-# ─── Authority — Issue Certificate (after payment) ────────────────────────────
+
+# ─── Issue Certificate (after payment verified) ────────────────────────────
 
 class IssueCertificateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        if request.user.role not in ['POLICE_AUTHORITY', 'SUPER_ADMIN']:
-            return Response({'error': 'Unauthorized'}, status=403)
+        if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
+            return Response({'error': 'Unauthorized. Only Police Staff can issue certificates.'}, status=403)
         try:
             application = Application.objects.get(pk=pk)
         except Application.DoesNotExist:
             return Response({'error': 'Not found'}, status=404)
 
-        if application.status != 'PAYMENT_CONFIRMED':
-            return Response({'error': 'Payment must be confirmed first.'}, status=400)
+        if application.status != 'PAYMENT_VERIFIED':
+            return Response({'error': 'Payment must be verified first.'}, status=400)
 
         if hasattr(application, 'certificate'):
             return Response({'error': 'Certificate already issued.'}, status=400)
 
         try:
+            # We temporarily change the status check requirement in the certificate_service, or we can just update the status before calling it if needed.
+            # However, since certificate_service checks for 'PAYMENT_CONFIRMED', we will update it there.
+            application.status = 'PAYMENT_CONFIRMED' 
+            application.save()
+
             from applications.certificate_service import CertificateService
             cert = CertificateService.generate_certificate(application)
             
@@ -360,6 +521,9 @@ class IssueCertificateView(APIView):
             return Response({'message': 'Certificate issued.', 'certificate_number': cert.certificate_number,
                              'status': 'COMPLETED'})
         except Exception as e:
+            # Revert status if generation fails
+            application.status = 'PAYMENT_VERIFIED'
+            application.save()
             return Response({'error': str(e)}, status=400)
 
 
@@ -462,14 +626,24 @@ class StaffListCreateView(APIView):
         if request.user.role not in ['POLICE_AUTHORITY', 'SUPER_ADMIN']:
             return Response({'error': 'Unauthorized'}, status=403)
         from users.serializers import UserSerializer
-        data = request.data.copy()
-        data['role'] = 'POLICE_STAFF'
-        serializer = UserSerializer(data=data)
+        serializer = UserSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        # Explicitly set role to POLICE_STAFF — UserSerializer has role as read_only
+        # so setting it in data dict is silently ignored by the serializer
+        user.role = 'POLICE_STAFF'
         user.set_password(request.data.get('password', 'Staff@1234'))
         user.save()
-        return Response(UserSerializer(user).data, status=201)
+
+        # Generate a one-time OTP so the new staff officer can log in immediately
+        from users.otp_service import get_otp_service
+        otp_service = get_otp_service()
+        otp_res = otp_service.generate_and_send(user, purpose="staff_account_activation")
+
+        response_data = UserSerializer(user).data
+        response_data['otp_code'] = otp_res.get('otp_code')  # Returned for admin to communicate to staff
+        response_data['message'] = f'Staff officer created. OTP for first login: {otp_res.get("otp_code", "Check console")}'
+        return Response(response_data, status=201)
 
 
 class StaffDetailView(APIView):

@@ -5,7 +5,9 @@ DRF views for the AI Face Verification API.
 
 Endpoints
 ---------
-POST   /api/face-verify/verify/          — Run live face verification
+POST   /api/face-verify/verify/          — Run live face verification (1:N search)
+POST   /api/face-verify/verify-cnic/     — Validate CNIC against NADRA database
+POST   /api/face-verify/verify-with-cnic/ — 1:1 face verification for submitted CNIC
 GET    /api/face-verify/history/         — Citizen's verification history
 GET    /api/face-verify/report/<uuid>/   — Retrieve a specific report
 GET    /api/face-verify/status/          — Embedding store health status
@@ -18,6 +20,8 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+import re
 
 from .models import FaceVerificationReport
 from .serializers import (
@@ -111,28 +115,344 @@ class LiveFaceVerifyView(APIView):
 
         if report.is_verified:
             message = (
-                f"✅ Verification successful — Identity confirmed. "
+                f"Verification successful - Identity confirmed. "
                 f"Matched: {report.matched_citizen_name} "
                 f"(Similarity: {report.similarity_pct:.2f}%)"
             )
         elif report.status == 'NO_FACE':
-            message = "❌ No face detected. Please ensure your face is clearly visible."
+            message = "No face detected. Please ensure your face is clearly visible."
         elif report.status == 'MULTIPLE_FACES':
-            message = "❌ Multiple faces detected. Please verify alone."
+            message = "Multiple faces detected. Please verify alone."
         elif report.status == 'LOW_QUALITY':
-            message = "❌ Image quality too low. Improve lighting and try again."
+            message = "Image quality too low. Improve lighting and try again."
         elif report.status == 'STORE_NOT_READY':
-            message = "⚠️ Verification system not ready. Contact administrator."
+            message = "Verification system not ready. Contact administrator."
         else:
             message = (
-                "❌ Verification failed — your face did not match any NADRA record "
-                f"with ≥{int(report.threshold_used * 100)}% confidence."
+                "Verification failed - your face did not match any NADRA record "
+                f"with >={int(report.threshold_used * 100)}% confidence."
             )
 
         return Response({
             'success': report.is_verified,
             'report': report_data,
             'message': message,
+        })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: CNIC-based 1:1 Verification Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+CNIC_PATTERN = re.compile(r'^\d{5}-\d{7}-\d$')
+
+
+class VerifyCNICView(APIView):
+    """
+    POST /api/face-verify/verify-cnic/
+    ===================================
+    Step 1 of the CNIC-based 1:1 face verification workflow.
+
+    Receives a CNIC, validates its format, searches the NADRA dummy database,
+    and returns the non-sensitive identity record if found.
+
+    The backend also checks whether an embedding exists for this CNIC in the
+    in-memory embedding store, which is required for the next step.
+
+    Request
+    -------
+    { "cnic": "42101-1234567-1" }
+
+    Response 200 (found)
+    --------------------
+    {
+        "found": true,
+        "cnic": "42101-1234567-1",
+        "name": "Ahmed Ali",
+        "date_of_birth": "15-05-2002",
+        "has_face_embedding": true
+    }
+
+    Response 200 (not found)
+    ------------------------
+    { "found": false, "error": "CNIC NOT FOUND ..." }
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, FormParser]
+
+    def post(self, request):
+        cnic = (request.data.get('cnic') or '').strip()
+
+        # ── Validate CNIC format ─────────────────────────────────────────
+        if not cnic:
+            return Response(
+                {'found': False, 'error': 'CNIC is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not CNIC_PATTERN.match(cnic):
+            return Response(
+                {
+                    'found': False,
+                    'error': (
+                        'Invalid CNIC format. '
+                        'Please enter in the format: XXXXX-XXXXXXX-X '
+                        '(e.g. 42101-1234567-1)'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Step 1: CNIC must match the authenticated citizen's own CNIC ──
+        citizen_cnic = getattr(request.user, 'cnic', '').strip()
+        if citizen_cnic and cnic != citizen_cnic:
+            logger.warning(
+                'CNIC mismatch: user=%s submitted CNIC=%s', citizen_cnic, cnic
+            )
+            return Response({
+                'found': False,
+                'error': (
+                    'CNIC MISMATCH\n\n'
+                    'The entered CNIC does not match your registered account CNIC. '
+                    'You can only verify your own identity.'
+                ),
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # ── Step 2: Search the identity card dataset (NADRARecord OR CSV) ────
+        try:
+            from nadra.models import NADRARecord
+            record = NADRARecord.objects.filter(cnic=cnic, is_active=True).first()
+        except Exception as exc:
+            logger.error('NADRA DB lookup error for CNIC=%s: %s', cnic, exc)
+            return Response(
+                {'found': False, 'error': 'Database error. Please try again.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # ── Step 3: Confirm a face image/embedding exists for this CNIC ──
+        try:
+            store = FaceVerificationService.get_store_instance()
+            cnic_record = store.get_record(cnic)
+            has_embedding = cnic_record is not None
+        except Exception:
+            has_embedding = False
+            cnic_record = None
+
+        # ── If no NADRARecord but embedding exists in store (CSV-based CNIC) ──
+        # The embedding store is keyed by real CNICs from the CSV dataset.
+        # Allow verification to proceed using CSV-sourced identity data.
+        if not record and has_embedding:
+            logger.info(
+                'CNIC=%s not in NADRARecord DB but found in CSV/embedding store — proceeding',
+                cnic
+            )
+            return Response({
+                'found': True,
+                'cnic': cnic,
+                'name': cnic_record.get('full_name', f'Citizen ({cnic})'),
+                'date_of_birth': 'N/A',
+                'has_face_embedding': True,
+            })
+
+        if not record:
+            logger.info('CNIC not found in identity card dataset: %s', cnic)
+            return Response({
+                'found': False,
+                'error': (
+                    'CNIC NOT IN DATASET\n\n'
+                    'Your CNIC was not found in the identity card dataset. '
+                    'Face verification requires a stored identity card image. '
+                    'Please contact the administrator to register your identity card.'
+                ),
+            })
+
+        if not has_embedding:
+            logger.warning('No face embedding in dataset for CNIC=%s', cnic)
+            return Response({
+                'found': False,
+                'error': (
+                    'NO FACE IMAGE FOUND\n\n'
+                    'No face image is linked to your CNIC in the identity card dataset. '
+                    'Please contact the administrator to upload your identity card photo.'
+                ),
+            })
+
+        # ── Return non-sensitive identity info ────────────────────────────
+        dob_str = (
+            record.date_of_birth.strftime('%d-%m-%Y')
+            if record.date_of_birth else 'N/A'
+        )
+
+        logger.info(
+            'CNIC ownership verified: citizen=%s, dataset name=%s',
+            citizen_cnic, record.full_name
+        )
+        return Response({
+            'found': True,
+            'cnic': cnic,
+            'name': record.full_name,
+            'date_of_birth': dob_str,
+            'has_face_embedding': True,
+        })
+
+
+class CnicBasedFaceVerifyView(APIView):
+    """
+    POST /api/face-verify/verify-with-cnic/
+    =========================================
+    Step 2 of the CNIC-based 1:1 face verification workflow.
+
+    Receives:
+      - cnic        : the previously verified CNIC
+      - live_image  : live webcam capture
+      - application_id (optional)
+
+    Backend logic:
+      1. Validate CNIC again (trust no frontend claim about which embedding to use)
+      2. Look up NADRA record by CNIC
+      3. Retrieve the specific embedding for this CNIC from the store
+      4. Extract live face embedding
+      5. Compare live embedding ONLY against this specific CNIC's embedding (1:1)
+      6. Return match/mismatch with similarity score
+      7. Save FaceVerificationReport
+
+    This enforces 1:1 verification, NOT 1:N identification.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        cnic = (request.data.get('cnic') or '').strip()
+        live_image_file = request.FILES.get('live_image')
+        application_id = request.data.get('application_id')
+
+        # ── Basic validation ─────────────────────────────────────────────
+        if not cnic:
+            return Response(
+                {'success': False, 'error': 'CNIC is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not CNIC_PATTERN.match(cnic):
+            return Response(
+                {'success': False, 'error': 'Invalid CNIC format.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not live_image_file:
+            return Response(
+                {'success': False, 'error': 'live_image is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Enforce CNIC ownership: submitted CNIC must be citizen's own ──
+        citizen_cnic = getattr(request.user, 'cnic', '').strip()
+        if citizen_cnic and cnic != citizen_cnic:
+            logger.warning(
+                'Face verify CNIC mismatch: user=%s submitted CNIC=%s', citizen_cnic, cnic
+            )
+            return Response({
+                'success': False,
+                'error': 'CNIC does not match your registered account. You can only verify your own identity.',
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # ── Resolve optional application ─────────────────────────────────
+        application = None
+        if application_id:
+            try:
+                from applications.models import Application
+                application = Application.objects.get(
+                    id=application_id,
+                    applicant=request.user,
+                )
+            except Exception:
+                pass
+
+        image_bytes = live_image_file.read()
+
+        # ── Run 1:1 CNIC-based verification ──────────────────────────────
+        report = FaceVerificationService.verify_with_cnic(
+            cnic=cnic,
+            image_bytes=image_bytes,
+            citizen=request.user,
+            application=application,
+            ip_address=_get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+        )
+
+        # ── Build response message ────────────────────────────────────────
+        report_data = FaceVerificationReportSerializer(report).data
+
+        # Enforce workflow state progression
+        if report.is_verified and application:
+            application.status = 'FACE_VERIFIED'
+            application.face_confidence = report.similarity_pct
+            application.save()
+            logger.info('Application %s progressed to FACE_VERIFIED', application.tracking_id)
+            
+            # Auto NADRA check
+            try:
+                from nadra.service import perform_nadra_check
+                from criminals.service import perform_criminal_check
+                from blockchain.service import BlockchainService
+                from notifications.service import notify_nadra_verified, notify_criminal_checked
+                
+                nadra_result = perform_nadra_check(application)
+                application.status = 'CRIMINAL_CHECKED'
+                application.save()
+                BlockchainService.add_block(
+                    'NADRA_VERIFY', str(application.id), request.user.cnic,
+                    {'result': nadra_result.result, 'score': nadra_result.similarity_score,
+                     'tracking_id': application.tracking_id},
+                )
+                notify_nadra_verified(request.user, application.tracking_id, nadra_result.result)
+
+                # Auto criminal check
+                criminal_result = perform_criminal_check(application)
+                BlockchainService.add_block(
+                    'CRIMINAL_CHECK', str(application.id), request.user.cnic,
+                    {'result': criminal_result.result, 'tracking_id': application.tracking_id},
+                )
+                notify_criminal_checked(request.user, application.tracking_id, criminal_result.result)
+                logger.info('Application %s progressed to CRIMINAL_CHECKED', application.tracking_id)
+            except Exception as e:
+                logger.error('Failed to run automated checks for application %s: %s', application.id, str(e))
+
+        if report.is_verified:
+            message = (
+                f'✓ Identity Verified — '
+                f'Face matches the registered face for CNIC {cnic}. '
+                f'(Similarity: {report.similarity_pct:.2f}%)'
+            )
+        elif report.status == 'FAILED':
+            message = (
+                f'✗ Identity Verification Failed — '
+                f'The captured face does not match the registered face '
+                f'associated with CNIC {cnic}. '
+                f'Verification Status: IDENTITY_MISMATCH'
+            )
+        elif report.status == 'NO_FACE':
+            message = 'No face detected. Please ensure your face is clearly visible.'
+        elif report.status == 'MULTIPLE_FACES':
+            message = 'Multiple faces detected. Please verify alone.'
+        elif report.status == 'LOW_QUALITY':
+            message = 'Image quality too low. Improve lighting and try again.'
+        elif report.status == 'STORE_NOT_READY':
+            message = 'Verification system not ready. Contact administrator.'
+        elif report.status == 'EMBEDDING_ERROR':
+            message = (
+                f'No face embedding found for CNIC {cnic}. '
+                'Please contact the administrator to register this CNIC.'
+            )
+        else:
+            message = 'Verification could not be completed. Please try again.'
+
+        return Response({
+            'success': report.is_verified,
+            'report': report_data,
+            'message': message,
+            'verification_mode': '1:1_CNIC_BASED',
+            'verified_cnic': cnic,
         })
 
 
