@@ -34,13 +34,7 @@ export default function PoliceDashboard() {
   }, []);
 
   const handleReview = async (id, status) => {
-    setActionLoading(id + status);
-    try {
-      await policeAPI.review(id, { status, notes: reviewNote });
-      setApps(prev => prev.map(a => a.id === id ? { ...a, status: status === 'APPROVED' ? 'COMPLETED' : 'REJECTED' } : a));
-      setReviewNote('');
-    } catch { alert('Review failed.'); }
-    finally { setActionLoading(null); }
+    alert('This endpoint has been disabled as part of Stage 3 workflow hardening. Please use the Staff Dispatch & Incident Operations dashboard.');
   };
 
   const handleCriminalSearch = async () => {

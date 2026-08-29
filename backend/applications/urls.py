@@ -4,7 +4,6 @@ from .views import (
     AIFaceVerifyView, ProcessPaymentView,
     StaffRemarkView, StaffForwardView, StaffConfirmView, StaffVerifyPaymentView,
     AuthorityDecisionView, IssueCertificateView,
-    PoliceReviewApplicationView,
     StaffListCreateView, StaffDetailView, StaffToggleActiveView, StaffResetPasswordView,
     AuthorityAnalyticsView,
     PublicCertificateVerifyView, DownloadCertificatePDFView,
@@ -25,7 +24,7 @@ urlpatterns = [
     path('staff/applications/<int:pk>/confirm/',           StaffConfirmView.as_view()),
     path('staff/applications/<int:pk>/verify-payment/',    StaffVerifyPaymentView.as_view()),
     path('staff/applications/<int:pk>/issue-cert/',        IssueCertificateView.as_view()),  # updated role
-    path('police/applications/<int:pk>/review/',           PoliceReviewApplicationView.as_view()),
+
 
     # ── Police Authority ──────────────────────────────────────────────────────
     path('authority/applications/<int:pk>/decide/',        AuthorityDecisionView.as_view()),

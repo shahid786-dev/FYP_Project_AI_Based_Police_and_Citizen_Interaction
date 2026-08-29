@@ -523,6 +523,73 @@ class WorkflowGuardTests(TestCase):
         # depending on whether the CertificateService succeeds in test environment
         self.assertIn(app.status, ['PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'COMPLETED'])
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Stage 3: Legacy Review Bypass Removal Tests
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def test_legacy_review_endpoint_is_removed(self):
+        """1, 2, 6, 7. Legacy review endpoint must return 404 and cannot approve or issue challan."""
+        app = make_app(self.citizen, 'FACE_VERIFIED')
+        
+        # Call the old URL pattern directly
+        res = self._staff_client().post(f'/api/police/applications/{app.pk}/review/', {'status': 'APPROVED', 'notes': 'Should fail'})
+        self.assertEqual(res.status_code, 404)
+        
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'FACE_VERIFIED')  # Status unaffected
+        self.assertFalse(Challan.objects.filter(application=app).exists())  # No challan generated
+
+    def test_staff_cannot_directly_set_authority_approved(self):
+        """9. No Police Staff endpoint can directly assign AUTHORITY_APPROVED status."""
+        app = make_app(self.citizen, 'FACE_VERIFIED')
+        
+        # Test remark endpoint
+        res1 = self._staff_client().post(f'/api/staff/applications/{app.pk}/remark/', {'status': 'AUTHORITY_APPROVED', 'remarks': 'hack'})
+        # Should not set status to AUTHORITY_APPROVED
+        app.refresh_from_db()
+        self.assertNotEqual(app.status, 'AUTHORITY_APPROVED')
+
+        # Test forward endpoint
+        res2 = self._staff_client().post(f'/api/staff/applications/{app.pk}/forward/', {'status': 'AUTHORITY_APPROVED', 'remarks': 'hack'})
+        app.refresh_from_db()
+        self.assertNotEqual(app.status, 'AUTHORITY_APPROVED')
+
+        # Test confirm endpoint
+        res3 = self._staff_client().post(f'/api/staff/applications/{app.pk}/confirm/', {'status': 'AUTHORITY_APPROVED'})
+        app.refresh_from_db()
+        self.assertNotEqual(app.status, 'AUTHORITY_APPROVED')
+
+    def test_staff_cannot_directly_set_authority_rejected(self):
+        """10. No Police Staff endpoint can directly assign AUTHORITY_REJECTED status."""
+        app = make_app(self.citizen, 'FACE_VERIFIED')
+        
+        # Test remark endpoint
+        self._staff_client().post(f'/api/staff/applications/{app.pk}/remark/', {'status': 'AUTHORITY_REJECTED', 'remarks': 'hack'})
+        app.refresh_from_db()
+        self.assertNotEqual(app.status, 'AUTHORITY_REJECTED')
+
+        # Test forward endpoint
+        self._staff_client().post(f'/api/staff/applications/{app.pk}/forward/', {'status': 'AUTHORITY_REJECTED', 'remarks': 'hack'})
+        app.refresh_from_db()
+        self.assertNotEqual(app.status, 'AUTHORITY_REJECTED')
+
+        # Test confirm endpoint
+        self._staff_client().post(f'/api/staff/applications/{app.pk}/confirm/', {'status': 'AUTHORITY_REJECTED'})
+        app.refresh_from_db()
+        self.assertNotEqual(app.status, 'AUTHORITY_REJECTED')
+
+    def test_staff_cannot_bypass_admin_stage(self):
+        """3, 11. Police Staff cannot bypass Admin stage (cannot jump to confirm directly)."""
+        app = make_app(self.citizen, 'STAFF_REVIEWED')
+        
+        # Try to confirm directly from STAFF_REVIEWED status (bypassing forward and admin decision)
+        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/confirm/')
+        self.assertEqual(res.status_code, 400)
+        
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'STAFF_REVIEWED')  # Unchanged
+        self.assertFalse(Challan.objects.filter(application=app).exists())
+
 
 # ─── Legacy Police Tests (preserved, non-interfering) ────────────────────────
 class PoliceTests(TestCase):

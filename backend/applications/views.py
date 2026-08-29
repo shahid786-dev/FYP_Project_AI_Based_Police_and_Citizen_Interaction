@@ -649,49 +649,8 @@ class IssueCertificateView(APIView):
             application.save()
             return Response({'error': str(e)}, status=400)
 
-
-# ─── Police Review (legacy compat — staff can still do quick approve) ─────────
-
-class PoliceReviewApplicationView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, pk):
-        if request.user.role not in ['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']:
-            return Response({'error': 'Unauthorized'}, status=403)
-        try:
-            application = Application.objects.get(pk=pk)
-        except Application.DoesNotExist:
-            return Response({'error': 'Not found'}, status=404)
-
-        review_status = request.data.get('status')
-        notes         = request.data.get('notes', '')
-        if review_status not in ['APPROVED', 'REJECTED']:
-            return Response({'error': 'Invalid status.'}, status=400)
-
-        application.notes = notes
-
-        if review_status == 'APPROVED':
-            application.status = 'AUTHORITY_APPROVED'
-            application.save()
-            BlockchainService.add_block(
-                'AUTHORITY_APPROVE', str(application.id), request.user.cnic,
-                {'tracking_id': application.tracking_id},
-            )
-            notify_authority_decision(application.applicant, application.tracking_id, True)
-            _generate_challan(application)
-        else:
-            application.status = 'AUTHORITY_REJECTED'
-            application.save()
-            BlockchainService.add_block(
-                'AUTHORITY_REJECT', str(application.id), request.user.cnic,
-                {'tracking_id': application.tracking_id, 'reason': notes},
-            )
-            notify_authority_decision(application.applicant, application.tracking_id, False, notes)
-
-        return Response({'message': f'Application {review_status.lower()}.', 'status': application.status})
-
-
 # ─── Analytics ────────────────────────────────────────────────────────────────
+
 
 class AuthorityAnalyticsView(APIView):
     permission_classes = [permissions.IsAuthenticated]

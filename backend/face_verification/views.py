@@ -368,6 +368,25 @@ class CnicBasedFaceVerifyView(APIView):
             except Exception:
                 pass
 
+        if application and application.status != 'PENDING':
+            if application.status in ['FACE_VERIFIED', 'CRIMINAL_CHECK', 'CRIMINAL_CHECKED', 'STAFF_REVIEWED', 'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED', 'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'APPROVED', 'COMPLETED']:
+                report = FaceVerificationReport.objects.filter(application=application, status='VERIFIED').first()
+                if report:
+                    report_data = FaceVerificationReportSerializer(report).data
+                else:
+                    report_data = {
+                        'status': 'VERIFIED',
+                        'is_verified': True,
+                        'similarity_pct': application.face_confidence or 100.0,
+                    }
+                return Response({
+                    'success': True,
+                    'report': report_data,
+                    'message': 'Face verification already completed successfully.',
+                    'verification_mode': '1:1_CNIC_BASED',
+                    'verified_cnic': cnic,
+                })
+
         image_bytes = live_image_file.read()
 
         # ── Run 1:1 CNIC-based verification ──────────────────────────────
@@ -383,46 +402,25 @@ class CnicBasedFaceVerifyView(APIView):
         # ── Build response message ────────────────────────────────────────
         report_data = FaceVerificationReportSerializer(report).data
 
-        # Enforce workflow state progression
+        # ── Stage 1 fix: Face verification ends at FACE_VERIFIED. ──────────
+        # Do NOT auto-chain into NADRA check, criminal check, forwarding,
+        # admin approval, payment, or certificate generation.
+        # The next actor is Police Staff.
         if report.is_verified and application:
             application.status = 'FACE_VERIFIED'
             application.face_confidence = report.similarity_pct
             application.save()
-            logger.info('Application %s progressed to FACE_VERIFIED', application.tracking_id)
-            
-            # Auto NADRA check
-            try:
-                from nadra.service import perform_nadra_check
-                from criminals.service import perform_criminal_check
-                from blockchain.service import BlockchainService
-                from notifications.service import notify_nadra_verified, notify_criminal_checked
-                
-                nadra_result = perform_nadra_check(application)
-                application.status = 'CRIMINAL_CHECKED'
-                application.save()
-                BlockchainService.add_block(
-                    'NADRA_VERIFY', str(application.id), request.user.cnic,
-                    {'result': nadra_result.result, 'score': nadra_result.similarity_score,
-                     'tracking_id': application.tracking_id},
-                )
-                notify_nadra_verified(request.user, application.tracking_id, nadra_result.result)
-
-                # Auto criminal check
-                criminal_result = perform_criminal_check(application)
-                BlockchainService.add_block(
-                    'CRIMINAL_CHECK', str(application.id), request.user.cnic,
-                    {'result': criminal_result.result, 'tracking_id': application.tracking_id},
-                )
-                notify_criminal_checked(request.user, application.tracking_id, criminal_result.result)
-                logger.info('Application %s progressed to CRIMINAL_CHECKED', application.tracking_id)
-            except Exception as e:
-                logger.error('Failed to run automated checks for application %s: %s', application.id, str(e))
+            logger.info(
+                'Application %s status set to FACE_VERIFIED — awaiting Police Staff review.',
+                application.tracking_id
+            )
 
         if report.is_verified:
             message = (
-                f'✓ Identity Verified — '
-                f'Face matches the registered face for CNIC {cnic}. '
-                f'(Similarity: {report.similarity_pct:.2f}%)'
+                f'✓ Face Verification Successful — '
+                f'Your identity has been confirmed for CNIC {cnic} '
+                f'(Similarity: {report.similarity_pct:.2f}%). '
+                f'Your application has been submitted for Police Staff review.'
             )
         elif report.status == 'FAILED':
             message = (
