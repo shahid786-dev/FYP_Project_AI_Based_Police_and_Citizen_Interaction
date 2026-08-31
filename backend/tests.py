@@ -62,7 +62,10 @@ class AuthTests(TestCase):
 
     def test_otp_verify_bypass(self):
         user = create_citizen()
-        res = self.client.post('/api/auth/verify-otp/', {'cnic': user.cnic, 'otp_code': '123456'})
+        from users.otp_service import get_otp_service
+        get_otp_service().generate_and_send(user, purpose="login")
+        user.refresh_from_db()
+        res = self.client.post('/api/auth/verify-otp/', {'cnic': user.cnic, 'otp_code': user.otp_code})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIn('access', res.data)
         self.assertEqual(res.data['role'], 'CITIZEN')
@@ -85,9 +88,9 @@ class ApplicationTests(TestCase):
         res = self.client.post('/api/citizen/applications/', data)
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertIn('tracking_id', res.data)
-        # Challan auto-generated
+        self.assertEqual(res.data['status'], 'PENDING')
         app = Application.objects.get(pk=res.data['id'])
-        self.assertTrue(Challan.objects.filter(application=app).exists())
+        self.assertEqual(app.status, 'PENDING')
 
     def test_citizen_cannot_see_other_citizen_apps(self):
         other = create_citizen(cnic='35202-9999999-9', email='other@test.com')
@@ -188,13 +191,14 @@ class ApplicationTests(TestCase):
     def test_process_payment(self):
         app = Application.objects.create(
             applicant=self.citizen, application_type='Character Certificate',
-            purpose='Test', current_address='Test', nearest_station='Test PS'
+            purpose='Test', current_address='Test', nearest_station='Test PS',
+            status='PAYMENT_PENDING'
         )
         Challan.objects.create(application=app, due_date='2027-01-01')
         res = self.client.post(f'/api/citizen/applications/{app.pk}/pay/', {'payment_method': 'jazzcash'})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['challan_status'], 'PAID')
-        self.assertEqual(res.data['application_status'], 'UNDER_REVIEW')
+        self.assertEqual(res.data['application_status'], 'PAYMENT_SUBMITTED')
 
 
 # ─── Stage 2: Workflow State Machine Guard Tests ──────────────────────────────
@@ -1050,4 +1054,181 @@ class CertificateDataIntegrityTests(TestCase):
         from applications.certificate_service import get_authority_name
         self.assertEqual(get_authority_name(None),  'Pakistan Police')
         self.assertEqual(get_authority_name(''),    'Pakistan Police')
+
+
+# ─── Stage 6: Full Frontend & E2E Integration Audit Tests ─────────────────────
+class Stage6IntegrationTests(TestCase):
+    """
+    Validates Stage 6 End-to-End Workflow:
+    - Multi-citizen isolation (Citizen A: Sindh/Karachi, Citizen B: Punjab/Lahore)
+    - Sequential status transitions: PENDING -> FACE_VERIFIED -> STAFF_REVIEWED -> FORWARDED_TO_ADMIN -> AUTHORITY_APPROVED -> STAFF_CONFIRMED -> PAYMENT_PENDING -> PAYMENT_SUBMITTED -> COMPLETED
+    - Role authorization checks (Citizens cannot approve/confirm/verify; Staff cannot authority approve/reject)
+    - Certificate data integrity & QR Verification isolation
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+        # Citizen A (Sindh, Karachi)
+        self.citizen_a = User.objects.create_user(
+            cnic='42101-1111111-1', email='sindh_citizen@test.com',
+            password='Pass@1234', full_name='Citizen Sindh',
+            role='CITIZEN', province='Sindh', district='Karachi'
+        )
+
+        # Citizen B (Punjab, Lahore)
+        self.citizen_b = User.objects.create_user(
+            cnic='35202-2222222-2', email='punjab_citizen@test.com',
+            password='Pass@1234', full_name='Citizen Punjab',
+            role='CITIZEN', province='Punjab', district='Lahore'
+        )
+
+        # Staff User
+        self.staff = User.objects.create_user(
+            cnic='35202-3333333-3', email='staff_officer@test.com',
+            password='Staff@1234', full_name='Staff Officer',
+            role='POLICE_STAFF'
+        )
+
+        # Authority User
+        self.authority = User.objects.create_user(
+            cnic='35202-4444444-4', email='authority_officer@test.com',
+            password='Auth@1234', full_name='Authority Officer',
+            role='POLICE_AUTHORITY'
+        )
+
+    def test_e2e_full_workflow_citizen_sindh(self):
+        """End-to-end test for Citizen A (Sindh / Karachi)."""
+        # 1. Citizen A creates application
+        self.client.force_authenticate(user=self.citizen_a)
+        res = self.client.post('/api/citizen/applications/', {
+            'application_type': 'Character Certificate',
+            'purpose': 'Employment abroad',
+            'current_address': 'Clifton Karachi',
+            'nearest_station': 'Clifton PS'
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        app_id = res.data['id']
+        app = Application.objects.get(pk=app_id)
+        self.assertEqual(app.status, 'PENDING')
+
+        # 2. Face Verification
+        Document.objects.create(application=app, document_type='PASSPORT_PHOTO', file='dummy_face.jpg')
+        res_face = self.client.post(f'/api/citizen/applications/{app_id}/face-verify/')
+        self.assertEqual(res_face.status_code, status.HTTP_200_OK)
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'FACE_VERIFIED')
+
+        # Role Check: Citizen cannot submit staff remark
+        res_fail_remark = self.client.post(f'/api/staff/applications/{app_id}/remark/', {'remarks': 'Illegal'})
+        self.assertEqual(res_fail_remark.status_code, status.HTTP_403_FORBIDDEN)
+
+        # 3. Police Staff Remark -> STAFF_REVIEWED
+        self.client.force_authenticate(user=self.staff)
+        res_remark = self.client.post(f'/api/staff/applications/{app_id}/remark/', {'remarks': 'Staff verified identity documents.'})
+        self.assertEqual(res_remark.status_code, status.HTTP_200_OK)
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'STAFF_REVIEWED')
+
+        # 4. Police Staff Forward -> FORWARDED_TO_ADMIN
+        res_forward = self.client.post(f'/api/staff/applications/{app_id}/forward/', {'remarks': 'Forwarding to Authority.'})
+        self.assertEqual(res_forward.status_code, status.HTTP_200_OK)
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'FORWARDED_TO_ADMIN')
+
+        # Role Check: Staff cannot approve application
+        res_fail_decide = self.client.post(f'/api/authority/applications/{app_id}/decide/', {'decision': 'APPROVE'})
+        self.assertEqual(res_fail_decide.status_code, status.HTTP_403_FORBIDDEN)
+
+        # 5. Police Authority Decision -> AUTHORITY_APPROVED
+        self.client.force_authenticate(user=self.authority)
+        res_decide = self.client.post(f'/api/authority/applications/{app_id}/decide/', {'decision': 'APPROVE', 'reason': 'Cleared'})
+        self.assertEqual(res_decide.status_code, status.HTTP_200_OK)
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'AUTHORITY_APPROVED')
+
+        # 6. Police Staff Confirm -> PAYMENT_PENDING (Challan auto generated)
+        self.client.force_authenticate(user=self.staff)
+        res_confirm = self.client.post(f'/api/staff/applications/{app_id}/confirm/', {})
+        self.assertEqual(res_confirm.status_code, status.HTTP_200_OK)
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'PAYMENT_PENDING')
+        self.assertTrue(Challan.objects.filter(application=app).exists())
+
+        # 7. Citizen A Pays -> PAYMENT_SUBMITTED
+        self.client.force_authenticate(user=self.citizen_a)
+        res_pay = self.client.post(f'/api/citizen/applications/{app_id}/pay/', {'payment_method': 'EASYPAISA', 'mobile_number': '03001234567'})
+        self.assertEqual(res_pay.status_code, status.HTTP_200_OK)
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'PAYMENT_SUBMITTED')
+
+        # 8. Police Staff Verifies Payment -> Certificate Issued -> COMPLETED
+        self.client.force_authenticate(user=self.staff)
+        res_verify_pay = self.client.post(f'/api/staff/applications/{app_id}/verify-payment/', {})
+        self.assertEqual(res_verify_pay.status_code, status.HTTP_200_OK)
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'COMPLETED')
+        self.assertTrue(Certificate.objects.filter(application=app).exists())
+        cert_a = Certificate.objects.get(application=app)
+
+        # 9. Public QR Scan Verification Check
+        self.client.force_authenticate(user=None)
+        res_qr = self.client.get(f'/api/certificates/verify/{cert_a.qr_code_hash}/')
+        self.assertEqual(res_qr.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_qr.data['applicant_name'], 'Citizen Sindh')
+        self.assertEqual(res_qr.data['cnic'], '42101-1111111-1')
+        self.assertEqual(res_qr.data['province'], 'Sindh')
+        self.assertEqual(res_qr.data['authority'], 'Sindh Police')
+
+    def test_e2e_full_workflow_citizen_punjab(self):
+        """End-to-end test for Citizen B (Punjab / Lahore)."""
+        self.client.force_authenticate(user=self.citizen_b)
+        res = self.client.post('/api/citizen/applications/', {
+            'application_type': 'Tenant Verification',
+            'purpose': 'Rental clearance',
+            'current_address': 'Gulberg Lahore',
+            'nearest_station': 'Gulberg PS'
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        app_id = res.data['id']
+        app = Application.objects.get(pk=app_id)
+
+        # Face Verification
+        Document.objects.create(application=app, document_type='PASSPORT_PHOTO', file='dummy_face.jpg')
+        self.client.post(f'/api/citizen/applications/{app_id}/face-verify/')
+        app.refresh_from_db()
+
+        # Staff Remark & Forward
+        self.client.force_authenticate(user=self.staff)
+        self.client.post(f'/api/staff/applications/{app_id}/remark/', {'remarks': 'Verified.'})
+        self.client.post(f'/api/staff/applications/{app_id}/forward/', {'remarks': 'Forwarding.'})
+
+        # Authority Decision
+        self.client.force_authenticate(user=self.authority)
+        self.client.post(f'/api/authority/applications/{app_id}/decide/', {'decision': 'APPROVE'})
+
+        # Staff Confirm
+        self.client.force_authenticate(user=self.staff)
+        self.client.post(f'/api/staff/applications/{app_id}/confirm/', {})
+
+        # Citizen B Pays
+        self.client.force_authenticate(user=self.citizen_b)
+        self.client.post(f'/api/citizen/applications/{app_id}/pay/', {'payment_method': 'JAZZCASH', 'mobile_number': '03009876543'})
+
+        # Staff Verify Payment -> COMPLETED
+        self.client.force_authenticate(user=self.staff)
+        self.client.post(f'/api/staff/applications/{app_id}/verify-payment/', {})
+
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'COMPLETED')
+        cert_b = Certificate.objects.get(application=app)
+
+        # QR Verification Check
+        self.client.force_authenticate(user=None)
+        res_qr = self.client.get(f'/api/certificates/verify/{cert_b.qr_code_hash}/')
+        self.assertEqual(res_qr.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_qr.data['applicant_name'], 'Citizen Punjab')
+        self.assertEqual(res_qr.data['cnic'], '35202-2222222-2')
+        self.assertEqual(res_qr.data['province'], 'Punjab')
+        self.assertEqual(res_qr.data['authority'], 'Punjab Police')
 

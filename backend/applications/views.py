@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.http import HttpResponse
-from django.db.models import Count, Sum
+from django.db.models import Count, Sum, Q
 import requests, datetime, io, uuid, qrcode
 import logging
 
@@ -806,7 +806,9 @@ class PublicCertificateVerifyView(APIView):
 
     def get(self, request, certificate_number):
         try:
-            cert = Certificate.objects.get(certificate_number=certificate_number)
+            cert = Certificate.objects.get(
+                Q(certificate_number=certificate_number) | Q(qr_code_hash=certificate_number)
+            )
         except Certificate.DoesNotExist:
             return Response({'error': 'Invalid Certificate'}, status=404)
 

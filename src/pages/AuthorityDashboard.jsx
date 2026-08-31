@@ -106,7 +106,7 @@ function AppRow({ app, onAction }) {
     finally { setActing(''); }
   };
 
-  const canDecide = app.status === 'STAFF_REVIEWED' || app.status === 'FORWARDED_TO_ADMIN';
+  const canDecide = app.status === 'FORWARDED_TO_ADMIN';
   const canCert   = app.status === 'PAYMENT_CONFIRMED' || app.status === 'PAYMENT_VERIFIED';
 
   return (
