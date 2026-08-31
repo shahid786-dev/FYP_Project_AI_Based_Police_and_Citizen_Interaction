@@ -107,7 +107,7 @@ function AppRow({ app, onAction }) {
   };
 
   const canDecide = app.status === 'STAFF_REVIEWED' || app.status === 'FORWARDED_TO_ADMIN';
-  const canCert   = app.status === 'PAYMENT_CONFIRMED' || app.status === 'AUTHORITY_APPROVED';
+  const canCert   = app.status === 'PAYMENT_CONFIRMED' || app.status === 'PAYMENT_VERIFIED';
 
   return (
     <div className="border border-slate-800 bg-slate-900 rounded-2xl overflow-hidden hover:border-slate-700 transition">

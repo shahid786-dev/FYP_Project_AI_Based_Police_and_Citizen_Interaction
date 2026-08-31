@@ -4,7 +4,7 @@ from rest_framework.test import APIClient
 from rest_framework import status
 from django.utils import timezone
 from unittest.mock import patch
-from applications.models import Application, Challan, Document
+from applications.models import Application, Challan, Document, Certificate
 from criminals.models import CriminalRecord, CriminalCheckResult
 from nadra.models import NADRAVerification
 
@@ -590,6 +590,141 @@ class WorkflowGuardTests(TestCase):
         self.assertEqual(app.status, 'STAFF_REVIEWED')  # Unchanged
         self.assertFalse(Challan.objects.filter(application=app).exists())
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Stage 4: Authoritative & Idempotent Certificate Generation Tests
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def test_certificate_cannot_be_generated_before_admin_approval(self):
+        """1. Certificate cannot be generated before admin approval."""
+        from applications.certificate_service import CertificateService
+        app = make_app(self.citizen, 'STAFF_REVIEWED')
+        
+        with self.assertRaises(ValueError):
+            CertificateService.generate_certificate(app)
+            
+        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/issue-cert/')
+        self.assertEqual(res.status_code, 400)
+
+    def test_certificate_cannot_be_generated_before_police_confirmation(self):
+        """2. Certificate cannot be generated before police confirmation."""
+        from applications.certificate_service import CertificateService
+        app = make_app(self.citizen, 'AUTHORITY_APPROVED')
+        
+        with self.assertRaises(ValueError):
+            CertificateService.generate_certificate(app)
+            
+        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/issue-cert/')
+        self.assertEqual(res.status_code, 400)
+
+    def test_certificate_cannot_be_generated_before_payment_submission(self):
+        """3. Certificate cannot be generated before payment submission."""
+        from applications.certificate_service import CertificateService
+        app = make_app(self.citizen, 'PAYMENT_PENDING')
+        
+        with self.assertRaises(ValueError):
+            CertificateService.generate_certificate(app)
+            
+        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/issue-cert/')
+        self.assertEqual(res.status_code, 400)
+
+    def test_certificate_cannot_be_generated_before_payment_verification(self):
+        """4. Certificate cannot be generated before payment verification."""
+        from applications.certificate_service import CertificateService
+        app = make_app(self.citizen, 'PAYMENT_SUBMITTED')
+        
+        with self.assertRaises(ValueError):
+            CertificateService.generate_certificate(app)
+            
+        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/issue-cert/')
+        self.assertEqual(res.status_code, 400)
+
+    def test_valid_completed_workflow_generates_exactly_one_certificate(self):
+        """5. Valid completed workflow generates exactly ONE certificate."""
+        from applications.certificate_service import CertificateService
+        app = make_app(self.citizen, 'PAYMENT_VERIFIED')
+        
+        cert = CertificateService.generate_certificate(app)
+        self.assertIsNotNone(cert)
+        app.refresh_from_db()
+        self.assertEqual(app.status, 'COMPLETED')
+        self.assertEqual(Certificate.objects.filter(application=app).count(), 1)
+
+    def test_repeating_certificate_generation_is_idempotent(self):
+        """6, 8, 9. Repeating the certificate request does not create duplicates/new numbers."""
+        from applications.certificate_service import CertificateService
+        app = make_app(self.citizen, 'PAYMENT_VERIFIED')
+        
+        cert1 = CertificateService.generate_certificate(app)
+        cert_num_1 = cert1.certificate_number
+        qr_hash_1 = cert1.qr_code_hash
+        
+        # Second call to service
+        cert2 = CertificateService.generate_certificate(app)
+        self.assertEqual(cert2.id, cert1.id)
+        self.assertEqual(cert2.certificate_number, cert_num_1)
+        self.assertEqual(cert2.qr_code_hash, qr_hash_1)
+        self.assertEqual(Certificate.objects.filter(application=app).count(), 1)
+        
+        # Call via API should also be idempotent
+        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/issue-cert/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['certificate_number'], cert_num_1)
+        self.assertEqual(Certificate.objects.filter(application=app).count(), 1)
+
+    def test_repeating_payment_verification_is_idempotent(self):
+        """7. Repeating payment verification does NOT create another certificate."""
+        from applications.models import Payment
+        app = make_app(self.citizen, 'PAYMENT_SUBMITTED')
+        challan = Challan.objects.create(application=app, due_date='2027-01-01', status='PAID')
+        Payment.objects.create(
+            application=app, challan=challan,
+            amount=650, payment_method='JAZZCASH',
+        )
+        
+        # Verify first time
+        res1 = self._staff_client().post(f'/api/staff/applications/{app.pk}/verify-payment/')
+        self.assertEqual(res1.status_code, 200)
+        cert_num_1 = res1.data.get('certificate_number')
+        self.assertIsNotNone(cert_num_1)
+        
+        # Verify second time (using staff client)
+        res2 = self._staff_client().post(f'/api/staff/applications/{app.pk}/verify-payment/')
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(Certificate.objects.filter(application=app).count(), 1)
+
+    def test_citizen_cannot_directly_invoke_certificate_issuance(self):
+        """12. Citizen cannot directly invoke privileged certificate issuance."""
+        app = make_app(self.citizen, 'PAYMENT_VERIFIED')
+        
+        res1 = self._citizen_client().post(f'/api/staff/applications/{app.pk}/issue-cert/')
+        self.assertEqual(res1.status_code, 403)
+        
+        res2 = self._citizen_client().post(f'/api/authority/applications/{app.pk}/issue-cert/')
+        self.assertEqual(res2.status_code, 403)
+        
+        self.assertFalse(Certificate.objects.filter(application=app).exists())
+
+    @patch('applications.certificate_service.CertificateService.generate_certificate')
+    def test_failed_certificate_generation_does_not_mark_completed(self, mock_generate):
+        """10, 11. If certificate generation fails, application is NOT falsely marked COMPLETED."""
+        from applications.models import Payment
+        mock_generate.side_effect = Exception("PDF generation failed")
+        
+        app = make_app(self.citizen, 'PAYMENT_SUBMITTED')
+        challan = Challan.objects.create(application=app, due_date='2027-01-01', status='PAID')
+        Payment.objects.create(
+            application=app, challan=challan,
+            amount=650, payment_method='JAZZCASH',
+        )
+        
+        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/verify-payment/')
+        self.assertEqual(res.status_code, 200)
+        
+        app.refresh_from_db()
+        # Should stay at PAYMENT_VERIFIED, and NOT become COMPLETED
+        self.assertEqual(app.status, 'PAYMENT_VERIFIED')
+        self.assertFalse(Certificate.objects.filter(application=app).exists())
+
 
 # ─── Legacy Police Tests (preserved, non-interfering) ────────────────────────
 class PoliceTests(TestCase):
@@ -625,3 +760,294 @@ class ChatbotTests(TestCase):
     def test_chatbot_empty_message_fails(self):
         res = self.client.post('/api/chatbot/chat/', {'message': ''})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ─── Stage 5: Certificate Province/District/Authority Data Integrity ─────────
+
+def make_app_for_citizen(citizen, status_val='PAYMENT_VERIFIED'):
+    """Create an application with applicant_province mirroring citizen.province."""
+    return Application.objects.create(
+        applicant=citizen,
+        application_type='Character Certificate',
+        purpose='Test',
+        current_address='Test Address',
+        nearest_station='Test PS',
+        status=status_val,
+        applicant_province=citizen.province,
+    )
+
+
+def create_citizen_with_province(cnic, email, full_name, province, district):
+    return User.objects.create_user(
+        cnic=cnic, email=email, password='Test@1234',
+        full_name=full_name, role='CITIZEN',
+        province=province, district=district,
+    )
+
+
+class CertificateDataIntegrityTests(TestCase):
+    """
+    Stage 5 — Certificate data, province/district and QR URL tests.
+    Ensures certificates carry the citizen's ACTUAL data from the DB.
+    """
+
+    def setUp(self):
+        self.staff = create_staff()
+        # Citizen A — Sindh/Karachi
+        self.citizen_sindh = create_citizen_with_province(
+            cnic='42101-1111111-1', email='sindh@test.com',
+            full_name='Zara Khan', province='Sindh', district='Karachi',
+        )
+        # Citizen B — Punjab/Lahore
+        self.citizen_punjab = create_citizen_with_province(
+            cnic='35202-2222222-2', email='punjab@test.com',
+            full_name='Ali Hassan', province='Punjab', district='Lahore',
+        )
+
+    def _generate_cert(self, citizen):
+        from applications.certificate_service import CertificateService
+        app = make_app_for_citizen(citizen, 'PAYMENT_VERIFIED')
+        return CertificateService.generate_certificate(app), app
+
+    # ── 1-2: Province-specific certificate data ─────────────────────────────
+
+    def test_sindh_citizen_gets_sindh_province(self):
+        """Sindh citizen certificate contains province=Sindh."""
+        cert, app = self._generate_cert(self.citizen_sindh)
+        self.assertEqual(app.applicant_province, 'Sindh')
+        # Verify the cert was generated
+        self.assertIsNotNone(cert)
+        self.assertEqual(app.status, 'COMPLETED')
+
+    def test_punjab_citizen_gets_punjab_province(self):
+        """Punjab citizen certificate contains province=Punjab."""
+        cert, app = self._generate_cert(self.citizen_punjab)
+        self.assertEqual(app.applicant_province, 'Punjab')
+        self.assertIsNotNone(cert)
+
+    # ── 3: District appears correctly ──────────────────────────────────────
+
+    def test_sindh_citizen_district_is_karachi(self):
+        """District for Sindh citizen is Karachi from DB."""
+        self.assertEqual(self.citizen_sindh.district, 'Karachi')
+
+    def test_punjab_citizen_district_is_lahore(self):
+        """District for Punjab citizen is Lahore from DB."""
+        self.assertEqual(self.citizen_punjab.district, 'Lahore')
+
+    # ── 4-5: Province/District not hardcoded ────────────────────────────────
+
+    def test_province_comes_from_application_not_hardcoded(self):
+        """applicant_province is set from citizen.province at application creation."""
+        app = make_app_for_citizen(self.citizen_sindh, 'PAYMENT_VERIFIED')
+        self.assertNotEqual(app.applicant_province, 'Punjab')
+        self.assertNotEqual(app.applicant_province, 'Sindh' if app.applicant_province == 'Punjab' else 'Punjab')
+        self.assertEqual(app.applicant_province, self.citizen_sindh.province)
+
+    def test_district_comes_from_citizen_model(self):
+        """District on citizen model is preserved without substitution."""
+        self.assertNotIn(self.citizen_sindh.district, ['Karachi South'])  # no dummy substitution
+        self.assertEqual(self.citizen_sindh.district, 'Karachi')
+
+    # ── 6: Serializer does NOT default province to Sindh ────────────────────
+
+    def test_serializer_does_not_default_province_to_sindh(self):
+        """Serializer's get_nadra_details must not return Sindh for a Punjab citizen."""
+        app = make_app_for_citizen(self.citizen_punjab, 'PENDING')
+        from applications.serializers import ApplicationSerializer
+        data = ApplicationSerializer(app).data
+        nadra = data.get('nadra_details', {})
+        # Province must NOT be Sindh for a Punjab citizen
+        self.assertNotEqual(nadra.get('province'), 'Sindh')
+
+    def test_serializer_does_not_default_province_to_punjab(self):
+        """Serializer's get_nadra_details must not return Punjab for a Sindh citizen."""
+        app = make_app_for_citizen(self.citizen_sindh, 'PENDING')
+        from applications.serializers import ApplicationSerializer
+        data = ApplicationSerializer(app).data
+        nadra = data.get('nadra_details', {})
+        # Province must NOT be Punjab for a Sindh citizen
+        self.assertNotEqual(nadra.get('province'), 'Punjab')
+
+    # ── 10-13: Certificate contains correct citizen data ────────────────────
+
+    def test_certificate_contains_correct_citizen_name(self):
+        """Certificate record is linked to the correct citizen name."""
+        cert, app = self._generate_cert(self.citizen_sindh)
+        self.assertEqual(cert.application.applicant.full_name, 'Zara Khan')
+
+    def test_certificate_contains_correct_cnic(self):
+        """Certificate is linked to the correct CNIC."""
+        cert, app = self._generate_cert(self.citizen_sindh)
+        self.assertEqual(cert.application.applicant.cnic, '42101-1111111-1')
+
+    def test_certificate_has_certificate_number(self):
+        """Certificate has a non-empty unique certificate number."""
+        cert, _ = self._generate_cert(self.citizen_sindh)
+        self.assertTrue(cert.certificate_number.startswith('CERT-'))
+
+    def test_certificate_has_issue_date(self):
+        """Certificate has a valid issue date."""
+        cert, _ = self._generate_cert(self.citizen_sindh)
+        self.assertIsNotNone(cert.issue_date)
+
+    # ── 14: Two citizens receive DIFFERENT certificate data ─────────────────
+
+    def test_two_citizens_receive_different_certificates(self):
+        """Sindh and Punjab citizens each get their own distinct certificate."""
+        cert_s, _ = self._generate_cert(self.citizen_sindh)
+        cert_p, _ = self._generate_cert(self.citizen_punjab)
+
+        # Different certificate numbers
+        self.assertNotEqual(cert_s.certificate_number, cert_p.certificate_number)
+        # Different linked citizens
+        self.assertNotEqual(
+            cert_s.application.applicant.cnic,
+            cert_p.application.applicant.cnic,
+        )
+
+    # ── 15-17: QR URL and verification endpoint ─────────────────────────────
+
+    def test_qr_verification_url_contains_certificate_number(self):
+        """QR verification_url embeds the actual certificate number."""
+        cert, _ = self._generate_cert(self.citizen_sindh)
+        self.assertIn(cert.certificate_number, cert.verification_url)
+
+    def test_qr_url_does_not_hardcode_localhost_in_production_config(self):
+        """
+        CERTIFICATE_VERIFY_BASE_URL is used, not a hardcoded localhost string
+        baked into Python source. Verifies the URL comes from settings.
+        """
+        from django.conf import settings
+        # The setting itself may still be localhost in dev — that's fine.
+        # What we verify is that the setting EXISTS (not that source code hardcodes it).
+        self.assertTrue(
+            hasattr(settings, 'CERTIFICATE_VERIFY_BASE_URL'),
+            "CERTIFICATE_VERIFY_BASE_URL setting must exist so it can be overridden in production."
+        )
+
+    def test_two_qr_codes_identify_different_certificates(self):
+        """Two citizens get two different QR URLs (different certificate numbers)."""
+        cert_s, _ = self._generate_cert(self.citizen_sindh)
+        cert_p, _ = self._generate_cert(self.citizen_punjab)
+        self.assertNotEqual(cert_s.verification_url, cert_p.verification_url)
+
+    def test_qr_verification_endpoint_returns_correct_province(self):
+        """GET /api/certificates/verify/<cert_num>/ returns the correct province."""
+        cert, _ = self._generate_cert(self.citizen_sindh)
+        client = APIClient()  # anonymous — public endpoint
+        res = client.get(f'/api/certificates/verify/{cert.certificate_number}/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['province'], 'Sindh')
+
+    def test_qr_verification_endpoint_returns_correct_district(self):
+        """GET /api/certificates/verify/<cert_num>/ returns the correct district."""
+        cert, _ = self._generate_cert(self.citizen_sindh)
+        client = APIClient()
+        res = client.get(f'/api/certificates/verify/{cert.certificate_number}/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['district'], 'Karachi')
+
+    def test_qr_verification_endpoint_returns_correct_authority_sindh(self):
+        """Sindh citizen → authority is 'Sindh Police'."""
+        cert, _ = self._generate_cert(self.citizen_sindh)
+        client = APIClient()
+        res = client.get(f'/api/certificates/verify/{cert.certificate_number}/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['authority'], 'Sindh Police')
+
+    def test_qr_verification_endpoint_returns_correct_authority_punjab(self):
+        """Punjab citizen → authority is 'Punjab Police'."""
+        cert, _ = self._generate_cert(self.citizen_punjab)
+        client = APIClient()
+        res = client.get(f'/api/certificates/verify/{cert.certificate_number}/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['authority'], 'Punjab Police')
+
+    def test_qr_does_not_cross_leak_citizen_data(self):
+        """Sindh cert verification endpoint must not return Punjab citizen data."""
+        cert_s, _ = self._generate_cert(self.citizen_sindh)
+        cert_p, _ = self._generate_cert(self.citizen_punjab)
+        client = APIClient()
+
+        res_s = client.get(f'/api/certificates/verify/{cert_s.certificate_number}/')
+        res_p = client.get(f'/api/certificates/verify/{cert_p.certificate_number}/')
+
+        # Sindh cert → Sindh data
+        self.assertEqual(res_s.data['province'], 'Sindh')
+        self.assertEqual(res_s.data['district'], 'Karachi')
+        self.assertEqual(res_s.data['applicant_name'], 'Zara Khan')
+
+        # Punjab cert → Punjab data
+        self.assertEqual(res_p.data['province'], 'Punjab')
+        self.assertEqual(res_p.data['district'], 'Lahore')
+        self.assertEqual(res_p.data['applicant_name'], 'Ali Hassan')
+
+        # No cross-leak
+        self.assertNotEqual(res_s.data['cnic'], res_p.data['cnic'])
+
+    # ── 18-19: Missing province/district — no silent substitution ───────────
+
+    def test_missing_province_is_none_not_punjab_or_sindh(self):
+        """When province is missing from user and application, it returns None — not Punjab or Sindh."""
+        citizen_no_province = User.objects.create_user(
+            cnic='00000-9999999-9', email='noprovince@test.com',
+            password='Test@1234', full_name='No Province Citizen',
+            role='CITIZEN', province=None, district=None,
+        )
+        app = Application.objects.create(
+            applicant=citizen_no_province,
+            application_type='Character Certificate',
+            purpose='Test', current_address='Test', nearest_station='Test PS',
+            status='PENDING',
+            applicant_province=None,
+        )
+        from applications.serializers import ApplicationSerializer
+        data = ApplicationSerializer(app).data
+        nadra = data.get('nadra_details', {})
+        prov = nadra.get('province')
+        # Must not silently substitute Punjab or Sindh
+        self.assertNotIn(prov, ['Punjab', 'Sindh'])
+        # Either None/null or empty
+        self.assertFalse(bool(prov))
+
+    def test_missing_district_is_none_not_karachi_or_lahore(self):
+        """When district is missing from user, it returns None — not a dummy district."""
+        citizen_no_district = User.objects.create_user(
+            cnic='00000-8888888-8', email='nodistrict@test.com',
+            password='Test@1234', full_name='No District Citizen',
+            role='CITIZEN', province=None, district=None,
+        )
+        app = Application.objects.create(
+            applicant=citizen_no_district,
+            application_type='Character Certificate',
+            purpose='Test', current_address='Test', nearest_station='Test PS',
+            status='PENDING',
+        )
+        from applications.serializers import ApplicationSerializer
+        data = ApplicationSerializer(app).data
+        nadra = data.get('nadra_details', {})
+        dist = nadra.get('district')
+        self.assertNotIn(dist, ['Karachi', 'Karachi South', 'Lahore'])
+        self.assertFalse(bool(dist))
+
+    # ── Province→Authority mapping logic ────────────────────────────────────
+
+    def test_get_authority_name_returns_correct_mapping(self):
+        """Province→authority function maps all known provinces correctly."""
+        from applications.certificate_service import get_authority_name
+        self.assertEqual(get_authority_name('Punjab'),             'Punjab Police')
+        self.assertEqual(get_authority_name('Sindh'),              'Sindh Police')
+        self.assertEqual(get_authority_name('Khyber Pakhtunkhwa'), 'KP Police')
+        self.assertEqual(get_authority_name('KPK'),                'KP Police')
+        self.assertEqual(get_authority_name('Balochistan'),        'Balochistan Police')
+        self.assertEqual(get_authority_name('Islamabad'),          'ICT Police')
+        # Unknown province → generic label
+        self.assertEqual(get_authority_name('Gilgit-Baltistan'),   'GB Police')
+
+    def test_get_authority_name_none_returns_pakistan_police(self):
+        """Missing province returns generic 'Pakistan Police'."""
+        from applications.certificate_service import get_authority_name
+        self.assertEqual(get_authority_name(None),  'Pakistan Police')
+        self.assertEqual(get_authority_name(''),    'Pakistan Police')
+

@@ -28,6 +28,7 @@ urlpatterns = [
 
     # ── Police Authority ──────────────────────────────────────────────────────
     path('authority/applications/<int:pk>/decide/',        AuthorityDecisionView.as_view()),
+    path('authority/applications/<int:pk>/issue-cert/',    IssueCertificateView.as_view()),
     path('authority/staff/',                               StaffListCreateView.as_view()),
     path('authority/staff/<int:pk>/',                      StaffDetailView.as_view()),
     path('authority/staff/<int:pk>/toggle-active/',        StaffToggleActiveView.as_view()),

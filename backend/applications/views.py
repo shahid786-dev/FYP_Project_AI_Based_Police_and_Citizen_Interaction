@@ -442,12 +442,10 @@ class StaffVerifyPaymentView(APIView):
         notify_payment_confirmed(application.applicant, application.tracking_id)
         logger.info('Payment verified for application %s by staff %s.', application.tracking_id, request.user.cnic)
 
-        # NOTE (Stage 4): Auto-certificate issuance is preserved here as-is.
-        # Stage 4 will consolidate certificate generation into a single explicit path.
-        # Do not refactor certificate logic in this stage.
+        # ── Stage 4: Delegate certificate generation to the ONE authoritative service ──
+        # CertificateService.generate_certificate is idempotent and handles
+        # status transitions (PAYMENT_VERIFIED → PAYMENT_CONFIRMED → COMPLETED).
         try:
-            application.status = 'PAYMENT_CONFIRMED'
-            application.save()
             from applications.certificate_service import CertificateService
             cert = CertificateService.generate_certificate(application)
             notify_certificate_ready(
@@ -459,9 +457,14 @@ class StaffVerifyPaymentView(APIView):
                 'certificate_number': cert.certificate_number,
             })
         except Exception as cert_err:
-            # If certificate generation fails, still return success for payment verification
+            # Certificate generation failed — stay at PAYMENT_VERIFIED so
+            # IssueCertificateView can retry.  Do NOT falsely mark COMPLETED.
+            logger.error(
+                'Certificate generation failed for %s: %s',
+                application.tracking_id, str(cert_err),
+            )
             return Response({
-                'message': f'Payment verified. Certificate generation pending: {str(cert_err)}',
+                'message': f'Payment verified successfully. Certificate generation pending: {str(cert_err)}',
                 'status': application.status,
             })
 
@@ -615,25 +618,27 @@ class IssueCertificateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        if request.user.role not in ['POLICE_STAFF', 'SUPER_ADMIN']:
-            return Response({'error': 'Unauthorized. Only Police Staff can issue certificates.'}, status=403)
+        if request.user.role not in ['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']:
+            return Response({'error': 'Unauthorized. Only Police Staff/Authority can issue certificates.'}, status=403)
         try:
             application = Application.objects.get(pk=pk)
         except Application.DoesNotExist:
             return Response({'error': 'Not found'}, status=404)
 
-        if application.status != 'PAYMENT_VERIFIED':
-            return Response({'error': 'Payment must be verified first.'}, status=400)
-
-        if hasattr(application, 'certificate'):
-            return Response({'error': 'Certificate already issued.'}, status=400)
+        # ── Stage 4 Guards ─────────────────────────────────────────────────────
+        # Only allow certificate issuance/retry if payment was verified or confirmed
+        if application.status not in ['PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'COMPLETED']:
+            return Response(
+                {
+                    'error': (
+                        f'Cannot issue certificate for application in status "{application.status}". '
+                        f'Payment must be verified first (required status: PAYMENT_VERIFIED).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
-            # We temporarily change the status check requirement in the certificate_service, or we can just update the status before calling it if needed.
-            # However, since certificate_service checks for 'PAYMENT_CONFIRMED', we will update it there.
-            application.status = 'PAYMENT_CONFIRMED' 
-            application.save()
-
             from applications.certificate_service import CertificateService
             cert = CertificateService.generate_certificate(application)
             
@@ -641,13 +646,17 @@ class IssueCertificateView(APIView):
                 application.applicant, application.tracking_id, cert.certificate_number
             )
             
-            return Response({'message': 'Certificate issued.', 'certificate_number': cert.certificate_number,
-                             'status': 'COMPLETED'})
+            return Response({
+                'message': 'Certificate issued successfully.',
+                'certificate_number': cert.certificate_number,
+                'status': 'COMPLETED'
+            })
         except Exception as e:
-            # Revert status if generation fails
-            application.status = 'PAYMENT_VERIFIED'
-            application.save()
-            return Response({'error': str(e)}, status=400)
+            # Revert status to PAYMENT_VERIFIED if generation fails
+            if application.status == 'PAYMENT_CONFIRMED':
+                application.status = 'PAYMENT_VERIFIED'
+                application.save()
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 # ─── Analytics ────────────────────────────────────────────────────────────────
 
@@ -801,21 +810,39 @@ class PublicCertificateVerifyView(APIView):
         except Certificate.DoesNotExist:
             return Response({'error': 'Invalid Certificate'}, status=404)
 
+        applicant = cert.application.applicant
+        application = cert.application
+
+        # Province/district resolution — same priority chain as serializer
+        province = (
+            application.applicant_province
+            or getattr(applicant, 'province', None)
+            or None
+        )
+        district = getattr(applicant, 'district', None) or None
+
+        # Dynamic authority name based on actual province
+        from applications.certificate_service import get_authority_name
+        authority = get_authority_name(province) if province else 'Pakistan Police'
+
         # Fetch blockchain hash for this application
         from blockchain.models import BlockchainBlock
         bc_block = BlockchainBlock.objects.filter(
-            record_id=str(cert.application.id), action_type='CERTIFICATE_ISSUE'
+            record_id=str(application.id), action_type='CERTIFICATE_ISSUE'
         ).first()
 
         return Response({
-            'valid':              cert.status == 'VALID',
-            'certificate_number': cert.certificate_number,
-            'applicant_name':     cert.application.applicant.full_name,
-            'cnic':               cert.application.applicant.cnic,
-            'issue_date':         cert.issue_date,
-            'expiry_date':        cert.validity_expiry,
-            'status':             cert.status,
-            'blockchain_hash':    bc_block.current_hash if bc_block else None,
+            'valid':               cert.status == 'VALID',
+            'certificate_number':  cert.certificate_number,
+            'applicant_name':      applicant.full_name,
+            'cnic':                applicant.cnic,
+            'province':            province,
+            'district':            district,
+            'authority':           authority,
+            'issue_date':          cert.issue_date,
+            'expiry_date':         cert.validity_expiry,
+            'status':              cert.status,
+            'blockchain_hash':     bc_block.current_hash if bc_block else None,
             'blockchain_verified': bc_block is not None,
         })
 

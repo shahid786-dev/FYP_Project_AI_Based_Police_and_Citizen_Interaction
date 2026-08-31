@@ -199,16 +199,35 @@ LOGGING = {
 
 # ── Certificate Generation Settings ──────────────────────────────────────
 CERTIFICATE_VALIDITY_DAYS = 180
+
+# Coordinates verified against Certificate_Template/Certificate_Template.jfif (816×1306 px)
+# Format: (x, y) where (0,0) is top-left
 CERTIFICATE_COORDINATES = {
-    'NAME': (250, 420),
-    'FATHER_NAME': (250, 460),
-    'CNIC': (250, 500),
-    'DOB': (250, 540),
-    'CERT_NUM': (250, 580),
-    'ISSUE_DATE': (250, 620),
-    'EXPIRY_DATE': (250, 660),
-    'STATUS': (150, 700),
-    'QR_CODE': (237, 750),  # centered horizontally for 150 width on 625 img
-    'QR_SIZE': 150
+    # Row 1: "This is to certify that Mr./Ms. ___"
+    'NAME':        (330, 388),
+    # Row 2: "S/O / D/O ___"
+    'FATHER_NAME': (130, 435),
+    # Row 3: "bearing CNIC No. ___"
+    'CNIC':        (220, 482),
+    # Row 4: "residing at District: ___ and Province: ___"
+    'DISTRICT':    (240, 530),
+    'PROVINCE':    (605, 530),
+    # Certificate details block
+    'CERT_NUM':    (215, 808),
+    'ISSUE_DATE':  (185, 855),
+    'EXPIRY_DATE': (185, 903),
+    'STATUS':      (265, 952),
+    # QR Code placeholder bottom-left (30,1040 → 175×175 px box)
+    'QR_CODE':     (30, 1040),
+    'QR_SIZE':     175,
 }
-FRONTEND_URL = 'http://localhost:5173'
+
+# Base URL used in QR code verification links.
+# Set CERTIFICATE_VERIFY_BASE_URL in the OS environment for production deployments.
+# Example:  CERTIFICATE_VERIFY_BASE_URL=https://pakverify.example.com
+CERTIFICATE_VERIFY_BASE_URL = os.environ.get(
+    'CERTIFICATE_VERIFY_BASE_URL',
+    os.environ.get('FRONTEND_URL', 'http://localhost:5173'),
+)
+# Legacy alias — some older code may still read FRONTEND_URL
+FRONTEND_URL = CERTIFICATE_VERIFY_BASE_URL
