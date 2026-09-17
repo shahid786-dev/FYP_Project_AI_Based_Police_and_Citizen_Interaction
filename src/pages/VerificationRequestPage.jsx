@@ -78,7 +78,7 @@ export default function VerificationRequestPage() {
           await applicationAPI.uploadDoc(app.id, fd);
         }
       }
-      navigate('/citizen/face-verify');
+      navigate('/citizen/face-verify', { state: { applicationId: app.id } });
     } catch (err) {
       setError(err.response?.data?.error || 'Submission failed. Please try again.');
     } finally { setLoading(false); }

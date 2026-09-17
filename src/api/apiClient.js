@@ -57,7 +57,7 @@ export const applicationAPI = {
 
 // ─── Police Staff ──────────────────────────────────────────────
 export const policeAPI = {
-  allApplications: ()         => API.get('/api/citizen/applications/'),
+  allApplications: ()         => API.get('/api/staff/applications/'),
   staffRemark:     (id, data) => API.post(`/api/staff/applications/${id}/remark/`, data),
   forward:         (id, data) => API.post(`/api/staff/applications/${id}/forward/`, data),
   confirmApp:      (id, data) => API.post(`/api/staff/applications/${id}/confirm/`, data),

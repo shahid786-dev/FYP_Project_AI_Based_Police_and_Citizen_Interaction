@@ -6,12 +6,15 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import FaceVerification from '../components/FaceVerification';
 import axios from 'axios';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 const FaceVerificationPage = () => {
+  const location = useLocation();
+  const applicationId = location.state?.applicationId || null;
   const [history, setHistory]   = useState([]);
   const [histLoading, setHL]    = useState(true);
 
@@ -70,6 +73,7 @@ const FaceVerificationPage = () => {
 
         {/* Verification component */}
         <FaceVerification
+          applicationId={applicationId}
           onVerificationComplete={fetchHistory}
         />
 

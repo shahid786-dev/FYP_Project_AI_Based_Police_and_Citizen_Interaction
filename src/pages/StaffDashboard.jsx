@@ -15,6 +15,7 @@ export default function StaffDashboard() {
   const [apps, setApps] = useState([]);
   const [sosList, setSosList] = useState([]);
   const [complaints, setComplaints] = useState([]);
+  const [dataError, setDataError] = useState('');
   const [loading, setLoading] = useState(true);
 
   // Criminal search state
@@ -29,15 +30,26 @@ export default function StaffDashboard() {
 
   const fetchData = async () => {
     setLoading(true);
+    setDataError('');
     try {
-      const [appRes, sosRes, compRes] = await Promise.all([
-        policeAPI.allApplications().catch(() => ({ data: [] })),
-        incidentsAPI.listSOS().catch(() => ({ data: [] })),
-        incidentsAPI.listComplaints().catch(() => ({ data: [] })),
+      const results = await Promise.allSettled([
+        policeAPI.allApplications(),
+        incidentsAPI.listSOS(),
+        incidentsAPI.listComplaints(),
       ]);
-      setApps(appRes.data || []);
-      setSosList(sosRes.data || []);
-      setComplaints(compRes.data || []);
+      const [appRes, sosRes, compRes] = results;
+      const failedSections = [];
+
+      if (appRes.status === 'fulfilled') setApps(appRes.value.data || []);
+      else failedSections.push('verification applications');
+      if (sosRes.status === 'fulfilled') setSosList(sosRes.value.data || []);
+      else failedSections.push('SOS alerts');
+      if (compRes.status === 'fulfilled') setComplaints(compRes.value.data || []);
+      else failedSections.push('complaints');
+
+      if (failedSections.length > 0) {
+        setDataError(`Could not load ${failedSections.join(', ')}. Check your permissions or try again.`);
+      }
     } finally {
       setLoading(false);
     }
@@ -159,6 +171,13 @@ export default function StaffDashboard() {
           </div>
         </div>
       </div>
+
+      {dataError && (
+        <div className="mb-6 flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300" role="alert">
+          <AlertCircle size={16} />
+          <span>{dataError}</span>
+        </div>
+      )}
 
       {/* Tabs Bar */}
       <div className="flex gap-2 mb-6 overflow-x-auto pb-1 text-xs">

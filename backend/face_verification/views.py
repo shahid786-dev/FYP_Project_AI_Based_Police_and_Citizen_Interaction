@@ -365,8 +365,14 @@ class CnicBasedFaceVerifyView(APIView):
                     id=application_id,
                     applicant=request.user,
                 )
-            except Exception:
-                pass
+            except Application.DoesNotExist:
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Application not found or access denied.',
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         if application and application.status != 'PENDING':
             if application.status in ['FACE_VERIFIED', 'CRIMINAL_CHECK', 'CRIMINAL_CHECKED', 'STAFF_REVIEWED', 'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED', 'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'APPROVED', 'COMPLETED']:

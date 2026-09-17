@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
-    ApplicationListCreateView, ApplicationDetailView, UploadDocumentView,
+    ApplicationListCreateView, ApplicationDetailView, StaffApplicationQueueView,
+    UploadDocumentView,
     AIFaceVerifyView, ProcessPaymentView,
     StaffRemarkView, StaffForwardView, StaffConfirmView, StaffVerifyPaymentView,
     AuthorityDecisionView, IssueCertificateView,
@@ -19,6 +20,7 @@ urlpatterns = [
     path('citizen/applications/<int:pk>/download-certificate/', DownloadCertificatePDFView.as_view()),
 
     # ── Police Staff ──────────────────────────────────────────────────────────
+    path('staff/applications/',                             StaffApplicationQueueView.as_view()),
     path('staff/applications/<int:pk>/remark/',            StaffRemarkView.as_view()),
     path('staff/applications/<int:pk>/forward/',           StaffForwardView.as_view()),
     path('staff/applications/<int:pk>/confirm/',           StaffConfirmView.as_view()),

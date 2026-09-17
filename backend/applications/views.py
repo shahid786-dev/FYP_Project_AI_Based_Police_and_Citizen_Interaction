@@ -28,6 +28,18 @@ from notifications.service import (
 User = get_user_model()
 
 
+class StaffWorkflowPermission(permissions.BasePermission):
+    """Allow only police staff and super admins to use staff workflow APIs."""
+
+    allowed_roles = {'POLICE_STAFF', 'SUPER_ADMIN'}
+
+    def has_permission(self, request, view):
+        return (
+            bool(request.user and request.user.is_authenticated)
+            and request.user.role in self.allowed_roles
+        )
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _generate_challan(application):
@@ -106,6 +118,14 @@ class ApplicationDetailView(generics.RetrieveAPIView):
         if user.role in ['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']:
             return Application.objects.all()
         return Application.objects.filter(applicant=user)
+
+
+class StaffApplicationQueueView(generics.ListAPIView):
+    serializer_class = ApplicationSerializer
+    permission_classes = [StaffWorkflowPermission]
+
+    def get_queryset(self):
+        return Application.objects.all().order_by('-submitted_at')
 
 
 class UploadDocumentView(APIView):
@@ -274,7 +294,7 @@ class ProcessPaymentView(APIView):
 # ─── Staff — Workflow Views ───────────────────────────────────────────────────
 
 class StaffForwardView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [StaffWorkflowPermission]
 
     # ── Stage 2 Guard ────────────────────────────────────────────────────────
     # Staff can only forward AFTER completing the staff review (STAFF_REVIEWED).
@@ -327,7 +347,7 @@ class StaffForwardView(APIView):
 
 
 class StaffConfirmView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [StaffWorkflowPermission]
 
     # ── Stage 2 Guard ────────────────────────────────────────────────────────
     # Staff can only confirm AFTER the authority has approved.
@@ -383,7 +403,7 @@ class StaffConfirmView(APIView):
 
 
 class StaffVerifyPaymentView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [StaffWorkflowPermission]
 
     # ── Stage 2 Guard ────────────────────────────────────────────────────────
     # Staff can only verify payment when the citizen has actually submitted it.
@@ -472,7 +492,7 @@ class StaffVerifyPaymentView(APIView):
 # ─── Staff — Remark + Recommend (Legacy/Optional) ────────────────────────────
 
 class StaffRemarkView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [StaffWorkflowPermission]
 
     # ── Stage 2 Guard ────────────────────────────────────────────────────────
     # Staff review (remark) is only valid AFTER face verification is complete.
