@@ -6,6 +6,7 @@ Checks the CNIC against the CriminalRecord database and stores a result.
 """
 
 from .models import CriminalRecord, CriminalCheckResult
+from blockchain.service import BlockchainService
 
 
 def perform_criminal_check(application) -> CriminalCheckResult:
@@ -31,6 +32,12 @@ def perform_criminal_check(application) -> CriminalCheckResult:
             "Background check PASSED."
         )
         check.save()
+        BlockchainService.add_block(
+            'CRIMINAL_CHECK',
+            str(application.id),
+            citizen.cnic,
+            {'result': check.result, 'tracking_id': application.tracking_id},
+        )
         return check
 
     # A record was found – determine severity
@@ -64,4 +71,14 @@ def perform_criminal_check(application) -> CriminalCheckResult:
         )
 
     check.save()
+    BlockchainService.add_block(
+        'CRIMINAL_CHECK',
+        str(application.id),
+        citizen.cnic,
+        {
+            'result': check.result,
+            'record_id': check.matched_record_id,
+            'tracking_id': application.tracking_id,
+        },
+    )
     return check

@@ -19,8 +19,10 @@ Clean architecture: views call this service, never touching models directly.
 
 import logging
 import time
+import requests
 from typing import Optional
 
+from django.conf import settings
 from django.db import DatabaseError as DjangoDatabaseError
 
 from .exceptions import (
@@ -32,6 +34,7 @@ from .exceptions import (
     LowConfidenceMatchError,
     EmbeddingStoreError,
     DatabaseError,
+    LivenessServiceError,
 )
 from .embedding_store import EmbeddingStore
 from .face_processor import extract_embedding_from_bytes, get_model_name
@@ -49,6 +52,28 @@ logger = logging.getLogger('face_verification')
 # The 1:1 CNIC gate ensures security — only the registered face is compared.
 SIMILARITY_THRESHOLD = 0.32   # Cosine similarity (32%) — optimised for cross-domain ID-card-vs-webcam
 HIGH_CONFIDENCE_THRESHOLD = 0.55
+LIVENESS_THRESHOLD = 0.70
+
+
+def check_liveness_with_ai(image_bytes: bytes) -> dict:
+    """Run the live-image anti-spoofing check through the AI service."""
+    try:
+        response = requests.post(
+            f"{settings.AI_SERVICE_URL.rstrip('/')}/api/ai/liveness/",
+            files={'live_photo': ('live.jpg', image_bytes, 'image/jpeg')},
+            timeout=getattr(settings, 'AI_SERVICE_TIMEOUT_SECONDS', 10),
+        )
+        response.raise_for_status()
+        result = response.json()
+        score = float(result.get('liveness_score', 0.0))
+        return {
+            'liveness_score': score,
+            'anti_spoofing': result.get('anti_spoofing', 'UNKNOWN'),
+            'face_detected': bool(result.get('face_detected', False)),
+            'verified': score >= LIVENESS_THRESHOLD and result.get('anti_spoofing') == 'REAL',
+        }
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        raise LivenessServiceError(str(exc)) from exc
 
 
 def _determine_confidence_level(similarity_pct: float) -> str:
@@ -93,8 +118,6 @@ def _append_blockchain_block(report: FaceVerificationReport, citizen) -> None:
             'report_id':         str(report.report_id),
             'status':            report.status,
             'similarity_pct':    report.similarity_pct,
-            'matched_cnic':      report.matched_cnic or 'NONE',
-            'matched_name':      report.matched_citizen_name or 'NONE',
             'model_used':        report.model_used,
             'threshold':         report.threshold_used,
             'verified_at':       str(report.verified_at),

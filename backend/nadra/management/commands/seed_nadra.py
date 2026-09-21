@@ -104,7 +104,7 @@ DUMMY_RECORDS = [
          address='Plot 8, Bahria Town Phase 5', district='Lahore', province='Punjab'),
 ]
 
-# Maps CNIC to the specific named image filename in Id_Card_Dataset
+     # Maps CNIC to the specific named image filename in data/id-card/images
 CNIC_TO_IMAGE_MAP = {
     '42301-1000001-1': 'MudasirAli.png',
     '42301-1000002-2': 'MudasirShah.png',
@@ -129,7 +129,7 @@ class Command(BaseCommand):
         media_nadra_dir = os.path.join(settings.MEDIA_ROOT, 'nadra_faces')
         os.makedirs(media_nadra_dir, exist_ok=True)
 
-        dataset_dir = str(settings.BASE_DIR.parent / 'Id_Card_Dataset')
+     dataset_dir = str(settings.BASE_DIR.parent / 'data' / 'id-card' / 'images')
         dataset_images = sorted([f for f in os.listdir(dataset_dir) if f.endswith('.png') or f.endswith('.jpg')])
 
         for idx, data in enumerate(DUMMY_RECORDS):

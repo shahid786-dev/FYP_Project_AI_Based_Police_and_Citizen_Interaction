@@ -4,11 +4,18 @@ from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-pakverify-super-secret-key-123456789'
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'dev-only-change-this-secret-before-deployment-0123456789abcdef',
+)
 
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'false').lower() == 'true'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    host for host in os.environ.get(
+        'DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1'
+    ).split(',') if host
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -149,11 +156,17 @@ SIMPLE_JWT = {
 }
 
 # CORS configuration
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    origin for origin in os.environ.get(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://127.0.0.1',
+    ).split(',') if origin
+]
 CORS_ALLOW_CREDENTIALS = True
 
 # AI Service URL configuration
 AI_SERVICE_URL = os.environ.get('AI_SERVICE_URL', 'http://localhost:8001')
+AI_SERVICE_TIMEOUT_SECONDS = float(os.environ.get('AI_SERVICE_TIMEOUT_SECONDS', '10'))
 
 # API Documentation
 SPECTACULAR_SETTINGS = {
@@ -200,7 +213,7 @@ LOGGING = {
 # ── Certificate Generation Settings ──────────────────────────────────────
 CERTIFICATE_VALIDITY_DAYS = 180
 
-# Coordinates verified against Certificate_Template/Certificate_Template.jfif (816×1306 px)
+# Coordinates verified against certificates/templates/Certificate_Template.jfif (816×1306 px)
 # Format: (x, y) where (0,0) is top-left
 CERTIFICATE_COORDINATES = {
     # Row 1: "This is to certify that Mr./Ms. ___"

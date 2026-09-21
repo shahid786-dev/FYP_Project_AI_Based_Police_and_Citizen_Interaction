@@ -29,9 +29,9 @@ User = get_user_model()
 
 
 class StaffWorkflowPermission(permissions.BasePermission):
-    """Allow only police staff and super admins to use staff workflow APIs."""
+    """Allow operational police roles to read and process workflow records."""
 
-    allowed_roles = {'POLICE_STAFF', 'SUPER_ADMIN'}
+    allowed_roles = {'POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN'}
 
     def has_permission(self, request, view):
         return (
@@ -90,6 +90,8 @@ class ApplicationListCreateView(generics.ListCreateAPIView):
         return Application.objects.filter(applicant=user).order_by('-submitted_at')
 
     def create(self, request, *args, **kwargs):
+        if request.user.role != 'CITIZEN':
+            return Response({'error': 'Only citizens can create applications.'}, status=status.HTTP_403_FORBIDDEN)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         application = serializer.save(
@@ -100,9 +102,7 @@ class ApplicationListCreateView(generics.ListCreateAPIView):
         BlockchainService.add_block(
             'APPLICATION_SUBMIT', str(application.id), request.user.cnic,
             {'tracking_id': application.tracking_id,
-             'application_type': application.application_type,
-             'purpose': application.purpose,
-             'province': application.applicant_province},
+             'application_type': application.application_type},
         )
         notify_application_submitted(request.user, application.tracking_id)
 
@@ -162,84 +162,69 @@ class AIFaceVerifyView(APIView):
             return Response({'error': 'Application not found'}, status=404)
 
         if application.status != 'PENDING':
-            # Safely recognize the current state and return success if already verified
-            if application.status in ['FACE_VERIFIED', 'CRIMINAL_CHECK', 'CRIMINAL_CHECKED', 'STAFF_REVIEWED', 'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED', 'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'APPROVED', 'COMPLETED']:
+            if application.status in ['CRIMINAL_CHECKED', 'STAFF_REVIEWED', 'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED', 'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'COMPLETED']:
                 return Response({
                     'message': 'Face verification already completed successfully.',
-                    'confidence': application.face_confidence or 100.0,
-                    'liveness_score': application.liveness_score or 1.0,
+                    'confidence': application.face_confidence,
+                    'liveness_score': application.liveness_score,
                     'status': application.status,
                 })
+            return Response({'error': f'Face verification is not available in status {application.status}.'}, status=400)
 
         live_image = request.FILES.get('live_image')
-        confidence, liveness = 94.6, 0.98   # simulation defaults
+        if not live_image:
+            return Response({'error': 'A live face image is required.'}, status=400)
 
-        if live_image:
-            from deepface import DeepFace
-            import tempfile
-            import os
+        from criminals.service import perform_criminal_check
+        from face_verification.exceptions import LivenessServiceError
+        from face_verification.service import FaceVerificationService, check_liveness_with_ai
 
-            try:
-                # Get user's NADRA record
-                from nadra.models import NADRARecord
-                nadra_record = NADRARecord.objects.filter(cnic=request.user.cnic).first()
+        try:
+            liveness = check_liveness_with_ai(live_image.read())
+        except LivenessServiceError as exc:
+            return Response({'error': str(exc)}, status=503)
 
-                if nadra_record and nadra_record.face_image:
-                    # Save live image temporarily to pass to DeepFace
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
-                        for chunk in live_image.chunks():
-                            tmp.write(chunk)
-                        tmp_path = tmp.name
+        if not liveness['verified']:
+            return Response({
+                'error': 'Liveness verification failed. Please capture a live image.',
+                'liveness_score': liveness['liveness_score'],
+                'anti_spoofing': liveness['anti_spoofing'],
+            }, status=400)
 
-                    try:
-                        # Perform verification
-                        result = DeepFace.verify(
-                            img1_path=tmp_path,
-                            img2_path=nadra_record.face_image.path,
-                            model_name='Facenet',
-                            enforce_detection=False
-                        )
-                        
-                        # Distance goes from 0 (same) to threshold (usually ~0.4 for Facenet)
-                        # Let's map it to confidence score 0-100%
-                        distance = result.get('distance', 1.0)
-                        threshold = result.get('threshold', 0.40)
-                        
-                        if distance < threshold:
-                            confidence = 100 - (distance / threshold * 30) # Maps to 70-100
-                        else:
-                            confidence = max(0, 70 - ((distance - threshold) * 100))
-                            
-                        # Keep simulated liveness for now since DeepFace doesn't do anti-spoofing
-                        liveness = 0.95
-                        
-                    finally:
-                        os.unlink(tmp_path)
-                else:
-                    return Response({'error': 'NADRA biometric record not found for this user.'}, status=400)
-                    
-            except Exception as e:
-                return Response({'error': f'Face verification failed: {str(e)}'}, status=500)
+        live_image.seek(0)
 
-        application.face_confidence  = confidence
-        application.liveness_score   = liveness
-        application.status           = 'FACE_VERIFIED' if confidence >= 70.0 else 'REJECTED'
-        application.save()
-
-        BlockchainService.add_block(
-            'AI_FACE_VERIFY', str(application.id), request.user.cnic,
-            {'confidence': confidence, 'liveness': liveness,
-             'result': application.status, 'tracking_id': application.tracking_id},
+        report = FaceVerificationService.verify_with_cnic(
+            cnic=request.user.cnic,
+            image_bytes=live_image.read(),
+            citizen=request.user,
+            application=application,
+            ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
         )
-        notify_ai_verified(request.user, application.tracking_id, confidence)
 
-        if application.status == 'FACE_VERIFIED':
-            logger.info('Application %s progressed to FACE_VERIFIED. Awaiting Police Staff review.', application.tracking_id)
+        application.face_confidence = report.similarity_pct
+        application.liveness_score = liveness['liveness_score']
+        if not report.is_verified:
+            application.status = 'REJECTED'
+            application.save(update_fields=['face_confidence', 'liveness_score', 'status', 'updated_at'])
+            return Response({
+                'message': 'Face verification failed for the registered CNIC.',
+                'confidence': report.similarity_pct,
+                'liveness_score': liveness['liveness_score'],
+                'status': application.status,
+            }, status=400)
+
+        criminal_check = perform_criminal_check(application)
+        application.status = 'CRIMINAL_CHECKED'
+        application.save(update_fields=['face_confidence', 'liveness_score', 'status', 'updated_at'])
+        notify_ai_verified(request.user, application.tracking_id, report.similarity_pct)
+        notify_criminal_checked(request.user, application.tracking_id, criminal_check.result)
 
         return Response({
-            'message': 'Face verification successful. Your application has been submitted for Police Staff review.',
-            'confidence': confidence,
-            'liveness_score': liveness,
+            'message': 'Face verified and criminal record check completed.',
+            'confidence': report.similarity_pct,
+            'liveness_score': liveness['liveness_score'],
+            'criminal_check': criminal_check.result,
             'status': application.status,
         })
 
@@ -256,8 +241,15 @@ class ProcessPaymentView(APIView):
         except (Application.DoesNotExist, Challan.DoesNotExist):
             return Response({'error': 'Application/Challan not found'}, status=404)
 
-        payment_method = request.data.get('payment_method')
-        if not payment_method:
+        if application.status != 'PAYMENT_PENDING' or challan.status != 'PENDING':
+            return Response({'error': 'Payment is not currently available for this application.'}, status=400)
+
+        if hasattr(application, 'payment_record'):
+            return Response({'error': 'Payment has already been submitted.'}, status=400)
+
+        payment_method = (request.data.get('payment_method') or '').upper()
+        valid_methods = {choice[0] for choice in Payment.PAYMENT_METHOD_CHOICES}
+        if payment_method not in valid_methods:
             return Response({'error': 'Payment method is required.'}, status=400)
 
         mobile_number = request.data.get('mobile_number', '')
@@ -339,7 +331,7 @@ class StaffForwardView(APIView):
 
         BlockchainService.add_block(
             'STAFF_FORWARD', str(application.id), request.user.cnic,
-            {'remarks': remarks, 'tracking_id': application.tracking_id},
+            {'tracking_id': application.tracking_id},
         )
         logger.info('Application %s forwarded to admin by %s.', application.tracking_id, request.user.cnic)
 
@@ -497,7 +489,7 @@ class StaffRemarkView(APIView):
     # ── Stage 2 Guard ────────────────────────────────────────────────────────
     # Staff review (remark) is only valid AFTER face verification is complete.
     # Applications that have progressed beyond STAFF_REVIEWED are idempotent.
-    REVIEWABLE_STATUSES = ['FACE_VERIFIED']
+    REVIEWABLE_STATUSES = ['CRIMINAL_CHECKED']
     ALREADY_REVIEWED_STATUSES = [
         'STAFF_REVIEWED', 'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED',
         'AUTHORITY_REJECTED', 'STAFF_CONFIRMED', 'PAYMENT_PENDING',
@@ -519,14 +511,22 @@ class StaffRemarkView(APIView):
                 'status': application.status,
             })
 
-        # ── Guard: must be FACE_VERIFIED ──────────────────────────────────────
+        from criminals.models import CriminalCheckResult
+        criminal_check = CriminalCheckResult.objects.filter(application=application).first()
+        if not criminal_check or criminal_check.result != 'CLEAN':
+            return Response(
+                {'error': 'Staff review requires a completed clean criminal record check.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Guard: face and criminal checks must be complete ──────────────────
         if application.status not in self.REVIEWABLE_STATUSES:
             return Response(
                 {
                     'error': (
                         f'Cannot review application in status "{application.status}". '
-                        f'Face verification must be completed first '
-                        f'(required status: FACE_VERIFIED).'
+                        f'Face verification and criminal checking must be completed first '
+                        f'(required status: CRIMINAL_CHECKED).'
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -543,8 +543,7 @@ class StaffRemarkView(APIView):
 
         BlockchainService.add_block(
             'STAFF_REVIEW', str(application.id), request.user.cnic,
-            {'remarks': remarks, 'recommendation': recommendation,
-             'tracking_id': application.tracking_id},
+            {'recommendation': recommendation, 'tracking_id': application.tracking_id},
         )
         notify_staff_reviewed(application.applicant, application.tracking_id, remarks)
         logger.info('Application %s staff-reviewed by %s.', application.tracking_id, request.user.cnic)
@@ -613,7 +612,7 @@ class AuthorityDecisionView(APIView):
             application.save()
             BlockchainService.add_block(
                 'AUTHORITY_APPROVE', str(application.id), request.user.cnic,
-                {'tracking_id': application.tracking_id, 'reason': reason},
+                {'tracking_id': application.tracking_id},
             )
             notify_authority_decision(application.applicant, application.tracking_id, True)
             logger.info('Application %s APPROVED by authority %s.', application.tracking_id, request.user.cnic)
@@ -623,7 +622,7 @@ class AuthorityDecisionView(APIView):
             application.save()
             BlockchainService.add_block(
                 'AUTHORITY_REJECT', str(application.id), request.user.cnic,
-                {'tracking_id': application.tracking_id, 'reason': reason},
+                {'tracking_id': application.tracking_id},
             )
             notify_authority_decision(application.applicant, application.tracking_id, False, reason)
             logger.info('Application %s REJECTED by authority %s.', application.tracking_id, request.user.cnic)
@@ -834,6 +833,7 @@ class PublicCertificateVerifyView(APIView):
 
         applicant = cert.application.applicant
         application = cert.application
+        masked_cnic = applicant.cnic[:5] + '-*******-' + applicant.cnic[-1:]
 
         # Province/district resolution — same priority chain as serializer
         province = (
@@ -857,7 +857,7 @@ class PublicCertificateVerifyView(APIView):
             'valid':               cert.status == 'VALID',
             'certificate_number':  cert.certificate_number,
             'applicant_name':      applicant.full_name,
-            'cnic':                applicant.cnic,
+            'cnic':                masked_cnic,
             'province':            province,
             'district':            district,
             'authority':           authority,
@@ -887,10 +887,6 @@ class DownloadCertificatePDFView(APIView):
         if not cert.pdf_file:
             return Response({'error': 'Certificate file not generated properly.'}, status=404)
 
-        BlockchainService.add_block(
-            'CERTIFICATE_DOWNLOAD', str(application.id), request.user.cnic,
-            {'certificate_number': cert.certificate_number, 'tracking_id': application.tracking_id},
-        )
 
         response = HttpResponse(cert.pdf_file.read(), content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="PakVerify_Cert_{cert.certificate_number}.pdf"'

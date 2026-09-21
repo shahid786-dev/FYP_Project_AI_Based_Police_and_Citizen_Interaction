@@ -50,7 +50,7 @@ logger = logging.getLogger('face_verification')
 
 class Command(BaseCommand):
     help = (
-        'Generate face embeddings from the NADRA Id_Card_Dataset and store '
+        'Generate face embeddings from the NADRA identity-card image dataset and store '
         'them as a pickle file for fast in-memory verification.'
     )
 
@@ -59,7 +59,7 @@ class Command(BaseCommand):
             '--dataset-dir',
             type=str,
             default=None,
-            help='Path to the image dataset folder. Defaults to Id_Card_Dataset at project root.',
+            help='Path to the image dataset folder. Defaults to data/id-card/images at project root.',
         )
         parser.add_argument(
             '--output-dir',
@@ -96,7 +96,9 @@ class Command(BaseCommand):
         # ── Resolve paths ────────────────────────────────────────────────
         project_root = settings.BASE_DIR.parent  # one level above backend/
 
-        dataset_dir = options['dataset_dir'] or str(project_root / 'Id_Card_Dataset')
+        dataset_dir = options['dataset_dir'] or str(
+            project_root / 'data' / 'id-card' / 'images'
+        )
         output_dir  = options['output_dir'] or str(
             settings.BASE_DIR / 'face_verification' / 'embeddings'
         )
@@ -307,7 +309,7 @@ class Command(BaseCommand):
         Build a mapping:  filename → {cnic, full_name, father_name, image_path}
 
         Priority:
-        1. Identity card CSV (Id_Card_Dataset_Text/identity_card_cnic_dataset.csv)
+        1. Identity card CSV (data/id-card/dummy-data/identity_card_cnic_dataset.csv)
            — rows with ocr_status=success and a non-empty cnic are used first.
         2. NADRARecord.face_image — if the field stores the filename or path.
         3. Match by image number → sequential CNIC assignment from ordered records.
@@ -317,13 +319,15 @@ class Command(BaseCommand):
         mapping = {}
 
         # ── Strategy 1: CSV-based CNIC lookup (primary source) ────────────
-        # The CSV at Id_Card_Dataset_Text/identity_card_cnic_dataset.csv maps
+        # The CSV at data/id-card/dummy-data/identity_card_cnic_dataset.csv maps
         # image filenames to CNICs that were extracted via OCR.
         # Only rows with ocr_status=success and a non-empty cnic are used.
         project_root = settings.BASE_DIR.parent  # one level above backend/
         csv_path = os.path.join(
             str(project_root),
-            'Id_Card_Dataset_Text',
+            'data',
+            'id-card',
+            'dummy-data',
             'identity_card_cnic_dataset.csv',
         )
 

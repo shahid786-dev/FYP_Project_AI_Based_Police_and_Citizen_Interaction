@@ -47,14 +47,14 @@ services:
 
   # ── FastAPI AI Microservice ──────────────────────────────────────
   ai-service:
-    build: ./ai_microservice
+    build: ./ai-service
     container_name: pakverify_ai
     ports:
       - "8001:8001"
 
   # ── React Frontend ───────────────────────────────────────────────
   frontend:
-    build: .
+    build: ./frontend
     container_name: pakverify_frontend
     ports:
       - "80:80"

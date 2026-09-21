@@ -18,7 +18,7 @@ Embedding file format (pickle)
         "embedding": np.ndarray (shape: (512,), dtype float32),
         "full_name": str,
         "father_name": str,
-        "image_path": str,   # relative path from Id_Card_Dataset/
+        "image_path": str,   # relative path from data/id-card/images/
     },
     ...
 }

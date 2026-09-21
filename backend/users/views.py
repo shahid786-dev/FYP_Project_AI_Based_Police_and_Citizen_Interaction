@@ -221,6 +221,11 @@ class AdminUserListView(generics.ListCreateAPIView):
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def create(self, request, *args, **kwargs):
+        if request.user.role != 'SUPER_ADMIN':
+            return Response({'error': 'Only Super Admins can manage users.'}, status=status.HTTP_403_FORBIDDEN)
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
         # Only admins can view all users
         if self.request.user.role != 'SUPER_ADMIN':

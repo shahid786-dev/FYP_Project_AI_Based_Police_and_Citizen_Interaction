@@ -30,7 +30,8 @@ from .serializers import (
     VerificationRequestSerializer,
     EmbeddingStoreStatusSerializer,
 )
-from .service import FaceVerificationService
+from .service import FaceVerificationService, check_liveness_with_ai
+from .exceptions import LivenessServiceError
 
 logger = logging.getLogger('face_verification')
 
@@ -76,6 +77,19 @@ class LiveFaceVerifyView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        return Response(
+            {
+                'success': False,
+                'error': (
+                    'Unscoped face identification is disabled. '
+                    'Use verify-with-cnic/ so the live face is compared only '
+                    'with the authenticated citizen\'s registered CNIC.'
+                ),
+            },
+            status=status.HTTP_410_GONE,
+        )
+
+        """Legacy implementation retained below for reference during migration."""
         # ── Validate request ─────────────────────────────────────────────
         serializer = VerificationRequestSerializer(data=request.data)
         if not serializer.is_valid():
@@ -395,6 +409,19 @@ class CnicBasedFaceVerifyView(APIView):
 
         image_bytes = live_image_file.read()
 
+        try:
+            liveness = check_liveness_with_ai(image_bytes)
+        except LivenessServiceError as exc:
+            return Response({'success': False, 'error': str(exc)}, status=503)
+
+        if not liveness['verified']:
+            return Response({
+                'success': False,
+                'error': 'Liveness verification failed. Please capture a live image.',
+                'liveness_score': liveness['liveness_score'],
+                'anti_spoofing': liveness['anti_spoofing'],
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         # ── Run 1:1 CNIC-based verification ──────────────────────────────
         report = FaceVerificationService.verify_with_cnic(
             cnic=cnic,
@@ -408,17 +435,23 @@ class CnicBasedFaceVerifyView(APIView):
         # ── Build response message ────────────────────────────────────────
         report_data = FaceVerificationReportSerializer(report).data
 
-        # ── Stage 1 fix: Face verification ends at FACE_VERIFIED. ──────────
-        # Do NOT auto-chain into NADRA check, criminal check, forwarding,
-        # admin approval, payment, or certificate generation.
-        # The next actor is Police Staff.
+        # Complete the same-CNIC criminal check before releasing the application
+        # to Police Staff. A non-clean result remains blocked at staff review.
         if report.is_verified and application:
-            application.status = 'FACE_VERIFIED'
+            from criminals.service import perform_criminal_check
+            from notifications.service import notify_criminal_checked
+
             application.face_confidence = report.similarity_pct
-            application.save()
+            application.liveness_score = liveness['liveness_score']
+            criminal_check = perform_criminal_check(application)
+            application.status = 'CRIMINAL_CHECKED'
+            application.save(update_fields=['face_confidence', 'liveness_score', 'status', 'updated_at'])
+            notify_criminal_checked(
+                request.user, application.tracking_id, criminal_check.result
+            )
             logger.info(
-                'Application %s status set to FACE_VERIFIED — awaiting Police Staff review.',
-                application.tracking_id
+                'Application %s completed face and criminal checks: %s.',
+                application.tracking_id, criminal_check.result,
             )
 
         if report.is_verified:

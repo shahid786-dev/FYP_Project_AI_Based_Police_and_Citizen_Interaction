@@ -14,6 +14,16 @@ class BlockPagination(PageNumberPagination):
     max_page_size = 100
 
 
+class BlockchainAuditPermission(permissions.BasePermission):
+    allowed_roles = {'POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN'}
+
+    def has_permission(self, request, view):
+        return (
+            bool(request.user and request.user.is_authenticated)
+            and request.user.role in self.allowed_roles
+        )
+
+
 class BlockchainBlockListView(generics.ListAPIView):
     """
     GET /api/blockchain/blocks/
@@ -22,7 +32,7 @@ class BlockchainBlockListView(generics.ListAPIView):
     """
     serializer_class    = BlockchainBlockSerializer
     pagination_class    = BlockPagination
-    permission_classes  = [permissions.AllowAny]
+    permission_classes  = [BlockchainAuditPermission]
     queryset            = BlockchainBlock.objects.all().order_by('-block_index')
 
     def get_queryset(self):
@@ -36,7 +46,7 @@ class BlockchainBlockListView(generics.ListAPIView):
 class BlockchainBlockDetailView(generics.RetrieveAPIView):
     """GET /api/blockchain/blocks/<id>/"""
     serializer_class   = BlockchainBlockSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [BlockchainAuditPermission]
     queryset           = BlockchainBlock.objects.all()
 
 
@@ -45,7 +55,7 @@ class BlockchainVerifyView(APIView):
     GET /api/blockchain/verify/
     Verify the entire chain integrity.
     """
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [BlockchainAuditPermission]
 
     def get(self, request):
         result = BlockchainService.verify_chain()
@@ -57,7 +67,7 @@ class BlockchainRecordHistoryView(APIView):
     GET /api/blockchain/record/<record_id>/
     Return all blocks associated with a specific application/record.
     """
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [BlockchainAuditPermission]
 
     def get(self, request, record_id):
         blocks = BlockchainService.get_record_history(record_id)

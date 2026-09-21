@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
 from django.utils import timezone
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from applications.models import Application, Challan, Document, Certificate
 from criminals.models import CriminalRecord, CriminalCheckResult
 from nadra.models import NADRAVerification
@@ -103,34 +103,19 @@ class ApplicationTests(TestCase):
         for item in res.data:
             self.assertEqual(item['applicant']['cnic'], self.citizen.cnic)
 
-    def test_face_verify_simulation(self):
+    def test_face_verify_requires_live_image(self):
         app = Application.objects.create(
             applicant=self.citizen, application_type='Character Certificate',
             purpose='Test', current_address='Test', nearest_station='Test PS'
         )
         Document.objects.create(application=app, document_type='PASSPORT_PHOTO', file='dummy.jpg')
-        # No live_image → triggers simulation fallback
         res = self.client.post(f'/api/citizen/applications/{app.pk}/face-verify/')
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertGreaterEqual(res.data['confidence'], 90.0)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('live face image', res.data['error'])
 
-        # Verify Stage 1 requirements
-        app.refresh_from_db()
-        self.assertEqual(app.status, 'FACE_VERIFIED')
-
-        # Confirm NADRA verification was NOT automatically triggered
-        self.assertFalse(NADRAVerification.objects.filter(application=app).exists())
-
-        # Confirm criminal checking was NOT automatically triggered
-        self.assertFalse(CriminalCheckResult.objects.filter(application=app).exists())
-
-        # Repeat the request. Should return success and not fail or throw error.
-        res_repeat = self.client.post(f'/api/citizen/applications/{app.pk}/face-verify/')
-        self.assertEqual(res_repeat.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_repeat.data['status'], 'FACE_VERIFIED')
-
+    @patch('face_verification.views.check_liveness_with_ai')
     @patch('face_verification.views.FaceVerificationService.verify_with_cnic')
-    def test_cnic_face_verify_no_autochain(self, mock_verify):
+    def test_cnic_face_verify_runs_criminal_check(self, mock_verify, mock_liveness):
         from django.core.files.uploadedfile import SimpleUploadedFile
         from face_verification.models import FaceVerificationReport
 
@@ -163,6 +148,12 @@ class ApplicationTests(TestCase):
         )
 
         mock_verify.return_value = report
+        mock_liveness.return_value = {
+            'liveness_score': 0.91,
+            'anti_spoofing': 'REAL',
+            'face_detected': True,
+            'verified': True,
+        }
 
         dummy_image = SimpleUploadedFile("face.jpg", b"file_content", content_type="image/jpeg")
         data = {
@@ -176,11 +167,11 @@ class ApplicationTests(TestCase):
         self.assertTrue(res.data['success'])
 
         app.refresh_from_db()
-        self.assertEqual(app.status, 'FACE_VERIFIED')
+        self.assertEqual(app.status, 'CRIMINAL_CHECKED')
 
-        # Verify NADRA verification and criminal check were NOT run
+        # Criminal screening runs against the authenticated citizen's CNIC.
         self.assertFalse(NADRAVerification.objects.filter(application=app).exists())
-        self.assertFalse(CriminalCheckResult.objects.filter(application=app).exists())
+        self.assertEqual(CriminalCheckResult.objects.get(application=app).result, 'CLEAN')
 
         # Test repeat request: should return immediately without calling mock_verify again
         mock_verify.reset_mock()
@@ -226,7 +217,6 @@ def make_app(citizen, status_val='PENDING'):
 class WorkflowGuardTests(TestCase):
     """
     Stage 2 — Strict state machine enforcement.
-    Tests every guard condition across all four key endpoints.
     """
 
     def setUp(self):
@@ -260,7 +250,7 @@ class WorkflowGuardTests(TestCase):
         res = self._staff_client().post(f'/api/staff/applications/{app.pk}/forward/', {'remarks': 'test'})
         self.assertEqual(res.status_code, 400)
         app.refresh_from_db()
-        self.assertEqual(app.status, 'PENDING')  # db unchanged
+        self.assertEqual(app.status, 'PENDING')
 
     # ─────────────────────────────────────────────────────────────────────────
     # Test 2 — Staff cannot forward before STAFF_REVIEWED (FACE_VERIFIED state)
@@ -272,12 +262,9 @@ class WorkflowGuardTests(TestCase):
         app.refresh_from_db()
         self.assertEqual(app.status, 'FACE_VERIFIED')  # db unchanged
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Test 3 — Staff CAN forward STAFF_REVIEWED application
-    # ─────────────────────────────────────────────────────────────────────────
     def test_staff_can_forward_staff_reviewed(self):
         app = make_app(self.citizen, 'STAFF_REVIEWED')
-        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/forward/', {'remarks': 'looks good'})
+        res = self._staff_client().post(f'/api/staff/applications/{app.pk}/forward/', {'remarks': 'test'})
         self.assertEqual(res.status_code, 200)
         app.refresh_from_db()
         self.assertEqual(app.status, 'FORWARDED_TO_ADMIN')  # db updated
@@ -485,7 +472,12 @@ class WorkflowGuardTests(TestCase):
         """Verifies DB state changes at each stage of the workflow."""
         from applications.models import Payment
 
-        app = make_app(self.citizen, 'FACE_VERIFIED')
+        app = make_app(self.citizen, 'CRIMINAL_CHECKED')
+        CriminalCheckResult.objects.create(
+            application=app,
+            result='CLEAN',
+            report_summary='No criminal record found.',
+        )
 
         # Step 1: Staff reviews
         res = self._staff_client().post(f'/api/staff/applications/{app.pk}/remark/', {'remarks': 'Verified in person.'})
@@ -1097,8 +1089,46 @@ class Stage6IntegrationTests(TestCase):
             role='POLICE_AUTHORITY'
         )
 
+    def _mock_face_and_liveness(self, citizen):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from face_verification.models import FaceVerificationReport
+        self.face_report = FaceVerificationReport(
+            citizen=citizen,
+            matched_cnic=citizen.cnic,
+            matched_citizen_name=citizen.full_name,
+            matched_father_name='Father',
+            matched_date_of_birth='1990-01-01',
+            matched_gender='M',
+            matched_address=citizen.address or 'Address',
+            matched_district=citizen.district or 'District',
+            matched_province=citizen.province or 'Province',
+            matched_photo_url='http://test',
+            similarity_score=0.885,
+            similarity_pct=88.5,
+            status='VERIFIED',
+            confidence_level='HIGH',
+            model_used='InsightFace',
+            processing_time_ms=120.0,
+            verified_at=timezone.now(),
+        )
+        face_patch = patch(
+            'face_verification.views.FaceVerificationService.verify_with_cnic',
+            return_value=self.face_report,
+        )
+        live_result = {
+            'liveness_score': 0.91,
+            'anti_spoofing': 'REAL',
+            'face_detected': True,
+            'verified': True,
+        }
+        return face_patch, patch(
+            'face_verification.service.check_liveness_with_ai',
+            return_value=live_result,
+        )
+
     def test_e2e_full_workflow_citizen_sindh(self):
         """End-to-end test for Citizen A (Sindh / Karachi)."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
         # 1. Citizen A creates application
         self.client.force_authenticate(user=self.citizen_a)
         res = self.client.post('/api/citizen/applications/', {
@@ -1112,12 +1142,18 @@ class Stage6IntegrationTests(TestCase):
         app = Application.objects.get(pk=app_id)
         self.assertEqual(app.status, 'PENDING')
 
-        # 2. Face Verification
+        # 2. Face Verification and criminal screening
         Document.objects.create(application=app, document_type='PASSPORT_PHOTO', file='dummy_face.jpg')
-        res_face = self.client.post(f'/api/citizen/applications/{app_id}/face-verify/')
+        face_patch, live_patch = self._mock_face_and_liveness(self.citizen_a)
+        with face_patch, live_patch:
+            res_face = self.client.post(
+                f'/api/citizen/applications/{app_id}/face-verify/',
+                {'live_image': SimpleUploadedFile('dummy.jpg', b'face', content_type='image/jpeg')},
+                format='multipart',
+            )
         self.assertEqual(res_face.status_code, status.HTTP_200_OK)
         app.refresh_from_db()
-        self.assertEqual(app.status, 'FACE_VERIFIED')
+        self.assertEqual(app.status, 'CRIMINAL_CHECKED')
 
         # Role Check: Citizen cannot submit staff remark
         res_fail_remark = self.client.post(f'/api/staff/applications/{app_id}/remark/', {'remarks': 'Illegal'})
@@ -1176,12 +1212,13 @@ class Stage6IntegrationTests(TestCase):
         res_qr = self.client.get(f'/api/certificates/verify/{cert_a.qr_code_hash}/')
         self.assertEqual(res_qr.status_code, status.HTTP_200_OK)
         self.assertEqual(res_qr.data['applicant_name'], 'Citizen Sindh')
-        self.assertEqual(res_qr.data['cnic'], '42101-1111111-1')
+        self.assertEqual(res_qr.data['cnic'], '42101-*******-1')
         self.assertEqual(res_qr.data['province'], 'Sindh')
         self.assertEqual(res_qr.data['authority'], 'Sindh Police')
 
     def test_e2e_full_workflow_citizen_punjab(self):
         """End-to-end test for Citizen B (Punjab / Lahore)."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
         self.client.force_authenticate(user=self.citizen_b)
         res = self.client.post('/api/citizen/applications/', {
             'application_type': 'Tenant Verification',
@@ -1195,7 +1232,13 @@ class Stage6IntegrationTests(TestCase):
 
         # Face Verification
         Document.objects.create(application=app, document_type='PASSPORT_PHOTO', file='dummy_face.jpg')
-        self.client.post(f'/api/citizen/applications/{app_id}/face-verify/')
+        face_patch, live_patch = self._mock_face_and_liveness(self.citizen_b)
+        with face_patch, live_patch:
+            self.client.post(
+                f'/api/citizen/applications/{app_id}/face-verify/',
+                {'live_image': SimpleUploadedFile('dummy.jpg', b'face', content_type='image/jpeg')},
+                format='multipart',
+            )
         app.refresh_from_db()
 
         # Staff Remark & Forward
@@ -1228,7 +1271,7 @@ class Stage6IntegrationTests(TestCase):
         res_qr = self.client.get(f'/api/certificates/verify/{cert_b.qr_code_hash}/')
         self.assertEqual(res_qr.status_code, status.HTTP_200_OK)
         self.assertEqual(res_qr.data['applicant_name'], 'Citizen Punjab')
-        self.assertEqual(res_qr.data['cnic'], '35202-2222222-2')
+        self.assertEqual(res_qr.data['cnic'], '35202-*******-2')
         self.assertEqual(res_qr.data['province'], 'Punjab')
         self.assertEqual(res_qr.data['authority'], 'Punjab Police')
 

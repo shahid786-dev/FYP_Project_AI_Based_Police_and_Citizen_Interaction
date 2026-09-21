@@ -120,9 +120,9 @@ class CertificateService:
         cert.save()
 
         # ── Load certificate template ─────────────────────────────────────────
-        # Primary: the JFIF template in Certificate_Template/
+        # Primary: the JFIF template in certificates/templates/
         template_path = os.path.join(
-            settings.BASE_DIR.parent, 'Certificate_Template', 'Certificate_Template.jfif'
+            settings.BASE_DIR.parent, 'certificates', 'templates', 'Certificate_Template.jfif'
         )
         # Fallback: old path (PNG in src/assets) for backward compatibility
         if not os.path.exists(template_path):
@@ -132,7 +132,7 @@ class CertificateService:
         if not os.path.exists(template_path):
             raise FileNotFoundError(
                 f"Certificate template not found. Tried:\n"
-                f"  {os.path.join(settings.BASE_DIR.parent, 'Certificate_Template', 'Certificate_Template.jfif')}\n"
+                f"  {os.path.join(settings.BASE_DIR.parent, 'certificates', 'templates', 'Certificate_Template.jfif')}\n"
                 f"  {os.path.join(settings.BASE_DIR.parent, 'src', 'assets', 'Police verification Certificate.png')}"
             )
 
@@ -209,8 +209,6 @@ class CertificateService:
                 'certificate_number': cert.certificate_number,
                 'tracking_id':        application.tracking_id,
                 'certificate_hash':   cert_hash,
-                'province':           province,
-                'district':           district,
             }
         )
 

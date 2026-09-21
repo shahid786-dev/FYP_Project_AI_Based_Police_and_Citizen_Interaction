@@ -78,3 +78,9 @@ class DatabaseError(FaceVerificationError):
     """Raised when a database operation fails during verification."""
     error_code = 'DATABASE_ERROR'
     default_message = 'A database error occurred while saving the verification result.'
+
+
+class LivenessServiceError(FaceVerificationError):
+    """Raised when the AI service cannot complete the liveness check."""
+    error_code = 'LIVENESS_SERVICE_ERROR'
+    default_message = 'The liveness verification service is unavailable.'

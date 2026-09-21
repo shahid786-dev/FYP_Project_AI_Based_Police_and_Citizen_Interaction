@@ -77,10 +77,8 @@ class CriminalRecordSearchView(APIView):
                         if confidence >= 90.0:
                             matching_records.append(criminal)
                 except Exception as e:
-                    # Fallback check: if name matches, simulate face match (for dev testing)
+                    # A failed biometric comparison must never become a match.
                     print(f"Criminal face match failed for {criminal.name}: {str(e)}")
-                    if criminal.name.lower() in request.user.full_name.lower():
-                        matching_records.append(criminal)
 
             if matching_records:
                 serializer = CriminalRecordSerializer(matching_records, many=True)
@@ -101,7 +99,13 @@ class CriminalRecordAdminView(generics.ListCreateAPIView):
     serializer_class = CriminalRecordSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        if self.request.user.role != 'SUPER_ADMIN':
+            return CriminalRecord.objects.none()
+        return super().get_queryset()
+
     def perform_create(self, serializer):
         if self.request.user.role != 'SUPER_ADMIN':
-            return Response({'error': 'Unauthorized access'}, status=status.HTTP_403_FORBIDDEN)
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Only Super Admins can modify criminal records.')
         serializer.save()

@@ -14,12 +14,12 @@ start "Django Backend (port 8000)" cmd /k "%VENV_PYTHON% %ROOT%\backend\manage.p
 timeout /t 5 /nobreak >nul
 
 echo [2/3] Starting AI Microservice on port 8001...
-start "AI Microservice (port 8001)" cmd /k "cd /d %ROOT%\ai_microservice & %VENV_PYTHON% main.py"
+start "AI Microservice (port 8001)" cmd /k "cd /d %ROOT%\ai-service & %VENV_PYTHON% main.py"
 
 timeout /t 3 /nobreak >nul
 
 echo [3/3] Starting React Frontend on port 5173...
-start "React Frontend (port 5173)" cmd /k "cd /d %ROOT% & npm run dev"
+start "React Frontend (port 5173)" cmd /k "cd /d %ROOT%\frontend & npm run dev"
 
 echo.
 echo =====================================================

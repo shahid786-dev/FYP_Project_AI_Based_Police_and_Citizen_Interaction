@@ -34,5 +34,6 @@ venv/
 backend/media/
 media/
 
-# Datasets
-Id_Card_Dataset/
+# Local datasets and generated certificate files
+data/id-card/images/
+certificates/generated/
