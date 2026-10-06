@@ -3,9 +3,11 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
 from django.utils import timezone
+from django.test import override_settings
 from unittest.mock import Mock, patch
 from applications.models import Application, Challan, Document, Certificate
 from criminals.models import CriminalRecord, CriminalCheckResult
+from incidents.models import EmergencySOS
 from nadra.models import NADRAVerification
 
 User = get_user_model()
@@ -65,10 +67,19 @@ class AuthTests(TestCase):
         from users.otp_service import get_otp_service
         get_otp_service().generate_and_send(user, purpose="login")
         user.refresh_from_db()
-        res = self.client.post('/api/auth/verify-otp/', {'cnic': user.cnic, 'otp_code': user.otp_code})
+        res = self.client.post('/api/auth/verify-otp/', {'cnic': user.cnic, 'otp_code': '123456'})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIn('access', res.data)
         self.assertEqual(res.data['role'], 'CITIZEN')
+
+    @override_settings(OTP_DEV_BYPASS_ENABLED=False)
+    def test_otp_bypass_disabled_outside_local_mode(self):
+        user = create_citizen()
+        from users.otp_service import get_otp_service
+        get_otp_service().generate_and_send(user, purpose="login")
+        res = self.client.post('/api/auth/verify-otp/', {'cnic': user.cnic, 'otp_code': '123456'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Invalid OTP', res.data['error'])
 
 
 # ─── Application Tests ────────────────────────────────────────────────────────
@@ -102,6 +113,26 @@ class ApplicationTests(TestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         for item in res.data:
             self.assertEqual(item['applicant']['cnic'], self.citizen.cnic)
+
+    def test_staff_queue_includes_new_and_face_verified_applications(self):
+        pending = Application.objects.create(
+            applicant=self.citizen, application_type='Character Certificate',
+            purpose='Pending application', current_address='Test', nearest_station='Test PS',
+        )
+        face_verified = Application.objects.create(
+            applicant=self.citizen, application_type='Character Certificate',
+            purpose='Face verified application', current_address='Test', nearest_station='Test PS',
+            status='FACE_VERIFIED',
+        )
+        self.client.force_authenticate(user=create_staff())
+
+        response = self.client.get('/api/staff/applications/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item['id'] for item in response.data},
+            {pending.id, face_verified.id},
+        )
 
     def test_face_verify_requires_live_image(self):
         app = Application.objects.create(
@@ -667,6 +698,7 @@ class WorkflowGuardTests(TestCase):
         self.assertEqual(res.data['certificate_number'], cert_num_1)
         self.assertEqual(Certificate.objects.filter(application=app).count(), 1)
 
+
     def test_repeating_payment_verification_is_idempotent(self):
         """7. Repeating payment verification does NOT create another certificate."""
         from applications.models import Payment
@@ -1038,7 +1070,7 @@ class CertificateDataIntegrityTests(TestCase):
         self.assertEqual(get_authority_name('KPK'),                'KP Police')
         self.assertEqual(get_authority_name('Balochistan'),        'Balochistan Police')
         self.assertEqual(get_authority_name('Islamabad'),          'ICT Police')
-        # Unknown province → generic label
+        # Unknown province -> generic label
         self.assertEqual(get_authority_name('Gilgit-Baltistan'),   'GB Police')
 
     def test_get_authority_name_none_returns_pakistan_police(self):
@@ -1046,6 +1078,45 @@ class CertificateDataIntegrityTests(TestCase):
         from applications.certificate_service import get_authority_name
         self.assertEqual(get_authority_name(None),  'Pakistan Police')
         self.assertEqual(get_authority_name(''),    'Pakistan Police')
+
+
+class AuthorityDashboardApiTests(TestCase):
+    def setUp(self):
+        self.authority = create_authority()
+        self.staff = create_staff(is_active=False)
+        self.sos = EmergencySOS.objects.create(
+            location_address='Station Road',
+            contact_number='03001234567',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.authority)
+
+    def test_staff_list_includes_account_active_state(self):
+        response = self.client.get('/api/authority/staff/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data[0]['is_active'])
+
+    def test_authority_can_update_sos_status_with_partial_payload(self):
+        response = self.client.patch(
+            f'/api/incidents/sos/{self.sos.pk}/status/',
+            {'status': 'ACKNOWLEDGED', 'police_notes': 'Control room acknowledged'},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.sos.refresh_from_db()
+        self.assertEqual(self.sos.status, 'ACKNOWLEDGED')
+        self.assertEqual(self.sos.police_notes, 'Control room acknowledged')
+
+    def test_sos_update_rejects_fields_outside_control_room_scope(self):
+        response = self.client.patch(
+            f'/api/incidents/sos/{self.sos.pk}/status/',
+            {'status': 'ACKNOWLEDGED', 'contact_number': '000'},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.sos.refresh_from_db()
+        self.assertEqual(self.sos.status, 'RECEIVED')
 
 
 # ─── Stage 6: Full Frontend & E2E Integration Audit Tests ─────────────────────
@@ -1274,4 +1345,3 @@ class Stage6IntegrationTests(TestCase):
         self.assertEqual(res_qr.data['cnic'], '35202-*******-2')
         self.assertEqual(res_qr.data['province'], 'Punjab')
         self.assertEqual(res_qr.data['authority'], 'Punjab Police')
-

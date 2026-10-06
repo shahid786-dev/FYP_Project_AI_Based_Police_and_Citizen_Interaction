@@ -5,43 +5,44 @@
  * Mounted at /citizen/verify in the React router.
  */
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import FaceVerification from '../components/FaceVerification';
-import axios from 'axios';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+import { API, getAccessToken } from '../api/apiClient';
 
 const FaceVerificationPage = () => {
   const location = useLocation();
-  const applicationId = location.state?.applicationId || null;
+  const queryApplicationId = new URLSearchParams(location.search).get('applicationId');
+  const initialApplicationId = location.state?.applicationId || queryApplicationId || null;
+  const [selectedApplicationId, setSelectedApplicationId] = useState(initialApplicationId);
   const [history, setHistory]   = useState([]);
   const [histLoading, setHL]    = useState(true);
 
-  const getAuthToken = () => {
-    try {
-      const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
-      return stored?.token || '';
-    } catch {
-      return '';
-    }
-  };
-  const token = getAuthToken();
+  const token = getAccessToken();
+
+  useEffect(() => {
+    if (selectedApplicationId || !token) return;
+    API.get('/api/citizen/applications/')
+      .then(({ data }) => {
+        const applications = Array.isArray(data) ? data : data.results || [];
+        const pending = applications.find(app => ['PENDING', 'REJECTED'].includes(app.status));
+        if (pending) setSelectedApplicationId(pending.id);
+      })
+      .catch(() => {});
+  }, [selectedApplicationId, token]);
 
   const fetchHistory = () => {
     if (!token) return;
     setHL(true);
-    axios
-      .get(`${API_BASE}/api/face-verify/history/?limit=5`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+    API.get('/api/face-verify/history/?limit=5')
       .then(res => setHistory(res.data.results || []))
       .catch(() => {})
       .finally(() => setHL(false));
   };
 
   useEffect(() => {
-    fetchHistory();
+    const timer = setTimeout(fetchHistory, 0);
+    return () => clearTimeout(timer);
   }, []); // eslint-disable-line
 
   return (
@@ -73,7 +74,7 @@ const FaceVerificationPage = () => {
 
         {/* Verification component */}
         <FaceVerification
-          applicationId={applicationId}
+          applicationId={selectedApplicationId}
           onVerificationComplete={fetchHistory}
         />
 

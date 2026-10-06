@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import {
   CreditCard, CheckCircle, AlertCircle, Shield, Copy, Smartphone,
-  Building2, Banknote, ChevronRight, Clock, Award, Lock
+  Building2, Banknote, Clock, Award, Lock
 } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { applicationAPI } from '../api/apiClient';
@@ -108,8 +108,6 @@ export default function PaymentPage() {
     } finally { setLoading(false); }
   };
 
-  const selectedMethod = PAYMENT_METHODS.find(m => m.id === paymentMethod);
-
   return (
     <DashboardLayout role="citizen" userName={user?.full_name || 'Citizen'}>
       <div className="mb-6">
@@ -130,8 +128,8 @@ export default function PaymentPage() {
             <div className="w-20 h-20 rounded-full bg-green-500/10 border border-green-500/30 flex items-center justify-center mx-auto mb-6">
               <CheckCircle size={40} className="text-green-400" />
             </div>
-            <h2 className="font-display text-2xl font-bold text-white mb-2">Payment Confirmed!</h2>
-            <p className="text-slate-400 text-sm mb-6">Your payment has been successfully processed and recorded on the blockchain.</p>
+            <h2 className="font-display text-2xl font-bold text-white mb-2">Payment Submitted</h2>
+            <p className="text-slate-400 text-sm mb-6">Your payment has been submitted for police staff verification.</p>
 
             <div className="bg-slate-950 rounded-2xl p-4 mb-6 space-y-2 text-xs text-left">
               <div className="flex justify-between">
@@ -152,7 +150,7 @@ export default function PaymentPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Status</span>
-                <span className="text-green-400 font-bold">CONFIRMED</span>
+                <span className="text-amber-400 font-bold">PENDING VERIFICATION</span>
               </div>
             </div>
 

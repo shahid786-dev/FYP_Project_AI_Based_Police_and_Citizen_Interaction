@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
-import { Search, Shield, CheckCircle2, Clock, AlertCircle, AlertTriangle, FileText, Check } from 'lucide-react';
+import { Search, Shield, CheckCircle2, AlertCircle, Check } from 'lucide-react';
 import { incidentsAPI, certAPI, API } from '../api/apiClient';
 
 export default function TrackApplicationPage() {
@@ -13,13 +13,7 @@ export default function TrackApplicationPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    if (initialId) {
-      handleSearch(initialId);
-    }
-  }, [initialId]);
-
-  const handleSearch = async (searchId = query) => {
+  async function handleSearch(searchId = query) {
     const idToSearch = searchId.trim();
     if (!idToSearch) return;
 
@@ -75,7 +69,14 @@ export default function TrackApplicationPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }
+
+  useEffect(() => {
+    if (initialId) {
+      const timer = setTimeout(() => handleSearch(initialId), 0);
+      return () => clearTimeout(timer);
+    }
+  }, [initialId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">

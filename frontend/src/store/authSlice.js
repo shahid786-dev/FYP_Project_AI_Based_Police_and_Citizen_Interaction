@@ -1,12 +1,18 @@
 import { createSlice } from '@reduxjs/toolkit';
+import {
+  clearStoredAuth,
+  getActiveRole,
+  getStoredAuth,
+  saveStoredAuth,
+} from './authStorage';
 
-const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
+const stored = getStoredAuth(getActiveRole());
 
 const initialState = {
   user: stored?.user || null,
-  token: stored?.token || null,
+  token: stored?.access || stored?.token || null,
   role: stored?.role || null,
-  isAuthenticated: !!stored?.token,
+  isAuthenticated: Boolean(stored?.access || stored?.token),
   loading: false,
   error: null,
 };
@@ -16,23 +22,23 @@ const authSlice = createSlice({
   initialState,
   reducers: {
     loginSuccess(state, action) {
-      state.token = action.payload.token;
+      state.token = action.payload.access || action.payload.token;
       state.user  = action.payload.user;
       state.role  = action.payload.role;
       state.isAuthenticated = true;
       state.error = null;
-      localStorage.setItem('pakverify_auth', JSON.stringify({
-        token: action.payload.token,
+      saveStoredAuth({
+        access: action.payload.access || action.payload.token,
         user:  action.payload.user,
         role:  action.payload.role,
-      }));
+      });
     },
     logout(state) {
+      clearStoredAuth(state.role || getActiveRole());
       state.token = null;
       state.user  = null;
       state.role  = null;
       state.isAuthenticated = false;
-      localStorage.removeItem('pakverify_auth');
     },
     setLoading(state, action) { state.loading = action.payload; },
     setError(state, action)   { state.error   = action.payload; },

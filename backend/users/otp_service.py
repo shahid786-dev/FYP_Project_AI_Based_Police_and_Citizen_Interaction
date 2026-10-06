@@ -46,14 +46,16 @@ class DevelopmentOTPService(BaseOTPService):
         }
 
     def verify(self, user, otp_code):
-        if not user.otp_code and otp_code != self.DEV_BYPASS_CODE:
+        bypass_enabled = getattr(settings, 'OTP_DEV_BYPASS_ENABLED', False)
+
+        if not user.otp_code and not (bypass_enabled and otp_code == self.DEV_BYPASS_CODE):
             return False, "No active OTP request found. Please request a new OTP."
             
         if user.otp_expiry and timezone.now() > user.otp_expiry:
-            if otp_code != self.DEV_BYPASS_CODE:
+            if not (bypass_enabled and otp_code == self.DEV_BYPASS_CODE):
                 return False, "OTP has expired. Please request a new code."
                 
-        if user.otp_code == otp_code or (settings.DEBUG and otp_code == self.DEV_BYPASS_CODE):
+        if user.otp_code == otp_code or (bypass_enabled and otp_code == self.DEV_BYPASS_CODE):
             # Clear OTP after successful verification
             user.otp_code = None
             user.otp_expiry = None

@@ -46,7 +46,7 @@ export default function LoginPage({ roleType = 'citizen' }) {
       streamRef.current = stream;
       setCameraActive(true);
       setError('');
-    } catch (err) {
+    } catch {
       setError('Camera access denied or unavailable.');
     }
   };
@@ -73,7 +73,7 @@ export default function LoginPage({ roleType = 'citizen' }) {
     canvas.getContext('2d').drawImage(videoRef.current, 0, 0);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
     
-    const [header, data] = dataUrl.split(',');
+    const [, data] = dataUrl.split(',');
     const binary = atob(data);
     const arr = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
@@ -89,7 +89,7 @@ export default function LoginPage({ roleType = 'citizen' }) {
     try {
       const res = await authAPI.loginFace(fd);
       const { access, role, full_name } = res.data;
-      dispatch(loginSuccess({ token: access, user: { full_name, cnic: cnic.trim() }, role }));
+      dispatch(loginSuccess({ access, user: { full_name, cnic: cnic.trim() }, role }));
       if (role === 'CITIZEN')              navigate('/citizen/dashboard');
       else if (role === 'POLICE_STAFF')    navigate('/staff/dashboard');
       else if (role === 'POLICE_AUTHORITY')navigate('/authority/dashboard');
@@ -131,12 +131,12 @@ export default function LoginPage({ roleType = 'citizen' }) {
       const otpCode = otp.join('');
       const res = await authAPI.verifyOtp({ cnic, otp_code: otpCode });
       const { access, role, full_name } = res.data;
-      dispatch(loginSuccess({ token: access, user: { full_name, cnic }, role }));
+      dispatch(loginSuccess({ access, user: { full_name, cnic }, role }));
       if (role === 'CITIZEN')              navigate('/citizen/dashboard');
       else if (role === 'POLICE_STAFF')    navigate('/staff/dashboard');
       else if (role === 'POLICE_AUTHORITY')navigate('/authority/dashboard');
       else navigate('/admin/dashboard');
-    } catch (err) {
+    } catch {
       setError('Invalid or expired OTP. Try 123456 for testing.');
     } finally {
       setLoading(false);

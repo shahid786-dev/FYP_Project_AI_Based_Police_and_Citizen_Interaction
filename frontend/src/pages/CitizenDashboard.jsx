@@ -1,18 +1,18 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import {
-  FileText, Clock, CheckCircle, AlertCircle, PlusCircle, Download, Search,
-  User as UserIcon, Camera, AlertTriangle, Ambulance, HeartHandshake, Shield,
-  ChevronRight, Bell, CreditCard, Award, Fingerprint, MapPin
+  FileText, Clock, CheckCircle, AlertCircle, PlusCircle, Download,
+  User as UserIcon, AlertTriangle, Ambulance, HeartHandshake, Shield,
+  ChevronRight, CreditCard, Award, Fingerprint
 } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
-import { applicationAPI, incidentsAPI } from '../api/apiClient';
+import { applicationAPI, incidentsAPI, getStoredAuth } from '../api/apiClient';
+import { useNotification, getApiErrorMessage } from '../components/notificationContext';
 import { setApplications } from '../store/applicationSlice';
 
 const STATUS_CONFIG = {
   PENDING:            { color: 'text-yellow-400', bg: 'bg-yellow-950/50 border-yellow-500/30', label: 'Pending Review' },
-  FACE_VERIFIED:      { color: 'text-cyan-400',   bg: 'bg-cyan-950/50 border-cyan-500/30',   label: 'Face Verified' },
   CRIMINAL_CHECKED:   { color: 'text-purple-400', bg: 'bg-purple-950/50 border-purple-500/30', label: 'Under Review' },
   STAFF_REVIEWED:     { color: 'text-blue-400',   bg: 'bg-blue-950/50 border-blue-500/30',   label: 'Staff Reviewed' },
   FORWARDED_TO_ADMIN: { color: 'text-blue-400',   bg: 'bg-blue-950/50 border-blue-500/30',   label: 'Admin Review' },
@@ -44,33 +44,44 @@ function getWorkflowStep(status) {
 }
 
 export default function CitizenDashboard() {
-  const navigate = useNavigate();
   const dispatch = useDispatch();
   const { user } = useSelector(s => s.auth);
   const { applications } = useSelector(s => s.application);
+  const notification = useNotification();
 
   const [complaints, setComplaints] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [photoPreview, setPhotoPreview] = useState(null);
-
-  const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+  const [photoPreview] = useState(() => {
+    return getStoredAuth()?.user?.photo_url || null;
+  });
 
   useEffect(() => {
-    Promise.all([
-      applicationAPI.list().catch(() => ({ data: [] })),
-      incidentsAPI.listComplaints().catch(() => ({ data: [] })),
-    ]).then(([appRes, compRes]) => {
-      dispatch(setApplications(appRes.data || []));
-      setComplaints(compRes.data || []);
-      setLoading(false);
-    });
+    let cancelled = false;
+    Promise.allSettled([applicationAPI.list(), incidentsAPI.listComplaints()])
+      .then(([appResult, complaintResult]) => {
+        if (cancelled) return;
+        if (appResult.status === 'fulfilled') {
+          dispatch(setApplications(appResult.value.data || []));
+        } else {
+          notification.error('Unable to Load Applications', getApiErrorMessage(appResult.reason, 'Your applications could not be loaded. Please try again.'));
+        }
+        if (complaintResult.status === 'fulfilled') {
+          setComplaints(complaintResult.value.data || []);
+        } else {
+          notification.error('Unable to Load Complaints', getApiErrorMessage(complaintResult.reason, 'Your complaints could not be loaded. Please try again.'));
+        }
+        setLoading(false);
+      })
+      .catch(error => {
+        if (cancelled) return;
+        notification.error('Unable to Load Dashboard', getApiErrorMessage(error, 'Your dashboard data could not be loaded. Please try again.'));
+        setLoading(false);
+      });
 
-    // Load profile photo if present
-    const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
-    if (stored?.user?.photo_url) {
-      setPhotoPreview(stored.user.photo_url);
-    }
-  }, [dispatch]);
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch, notification]);
 
   const handleDownloadCert = async (app) => {
     try {
@@ -82,8 +93,8 @@ export default function CitizenDashboard() {
       document.body.appendChild(link);
       link.click();
       link.remove();
-    } catch {
-      alert('Certificate not ready yet. Please check back later.');
+    } catch (error) {
+      notification.error('Unable to Download Certificate', getApiErrorMessage(error, 'The certificate is not ready yet. Please check back later.'));
     }
   };
 
@@ -242,7 +253,11 @@ export default function CitizenDashboard() {
                 <p className="text-yellow-300 font-bold">Face Verification Required</p>
                 <p className="text-white/50 mt-0.5">Please complete face verification to proceed.</p>
               </div>
-              <Link to="/citizen/face-verify" className="ml-auto px-3 py-1.5 rounded-lg bg-yellow-500 text-slate-950 font-bold text-xs flex items-center gap-1">
+              <Link
+                to="/citizen/face-verify"
+                state={{ applicationId: latestApp.id }}
+                className="ml-auto px-3 py-1.5 rounded-lg bg-yellow-500 text-slate-950 font-bold text-xs flex items-center gap-1"
+              >
                 Verify Now <ChevronRight size={12} />
               </Link>
             </div>

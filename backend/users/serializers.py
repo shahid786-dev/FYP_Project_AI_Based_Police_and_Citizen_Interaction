@@ -10,9 +10,9 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             'id', 'cnic', 'full_name', 'father_name', 'dob', 'gender',
-            'mobile_number', 'email', 'province', 'district', 'address', 'role'
+            'mobile_number', 'email', 'province', 'district', 'address', 'role', 'is_active'
         )
-        read_only_fields = ('id', 'role')
+        read_only_fields = ('id', 'role', 'is_active')
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6)

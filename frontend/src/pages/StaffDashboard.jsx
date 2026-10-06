@@ -1,35 +1,30 @@
 import { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
-import {
-  Shield, Clock, Search, CheckCircle, AlertTriangle, FileText, User,
-  ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown,
-  Info, Activity, Fingerprint, AlertCircle, Ambulance, Navigation, Check
-} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Shield, Search, AlertTriangle, FileText, AlertCircle } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { policeAPI, incidentsAPI } from '../api/apiClient';
+import { useNotification, getApiErrorMessage } from '../components/notificationContext';
 
 export default function StaffDashboard() {
   const { user } = useSelector(s => s.auth);
-  const [tab, setTab] = useState('sos'); // 'sos', 'complaints', 'verification', 'criminal'
+  const notification = useNotification();
+  const navigate = useNavigate();
+  const [tab, setTab] = useState('verification'); // 'sos', 'complaints', 'verification', 'criminal'
   
   const [apps, setApps] = useState([]);
   const [sosList, setSosList] = useState([]);
   const [complaints, setComplaints] = useState([]);
   const [dataError, setDataError] = useState('');
-  const [loading, setLoading] = useState(true);
 
   // Criminal search state
   const [criminal, setCriminal] = useState({ query: '', type: 'cnic', result: null, loading: false });
 
   const [actionLoading, setActionLoading] = useState({});
   const [remarksMap, setRemarksMap] = useState({});
+  const [criminalResults, setCriminalResults] = useState({});
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
-    setLoading(true);
+  async function fetchData() {
     setDataError('');
     try {
       const results = await Promise.allSettled([
@@ -50,26 +45,33 @@ export default function StaffDashboard() {
       if (failedSections.length > 0) {
         setDataError(`Could not load ${failedSections.join(', ')}. Check your permissions or try again.`);
       }
-    } finally {
-      setLoading(false);
+    } catch {
+      setDataError('Could not load dashboard data. Please try again.');
     }
-  };
+  }
+
+  useEffect(() => {
+    const timer = setTimeout(fetchData, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   const handleUpdateSOSStatus = async (id, status) => {
     try {
       await incidentsAPI.updateSOSStatus(id, { status, police_notes: 'Updated by Police Control Desk' });
-      fetchData();
+      await fetchData();
+      notification.success('SOS Status Updated', 'The emergency alert status has been updated.');
     } catch {
-      alert('Could not update SOS status.');
+      notification.error('Unable to Update SOS Status', 'The emergency alert could not be updated. Please try again.');
     }
   };
 
   const handleUpdateComplaintStatus = async (id, status) => {
     try {
       await incidentsAPI.updateComplaint(id, { status, police_notes: 'Updated by Station Desk' });
-      fetchData();
+      await fetchData();
+      notification.success('Complaint Updated', 'The complaint status has been updated.');
     } catch {
-      alert('Could not update complaint status.');
+      notification.error('Unable to Update Complaint', 'The complaint could not be updated. Please try again.');
     }
   };
 
@@ -89,12 +91,30 @@ export default function StaffDashboard() {
     try {
       await policeAPI.staffRemark(id, { remarks: remarks || 'Initial Police Staff Review Complete' });
       await fetchData();
-      alert('Staff review completed. Status updated to STAFF_REVIEWED.');
+      notification.success('Application Reviewed Successfully', 'Your review has been recorded successfully.');
     } catch (err) {
-      alert('Error submitting staff remark: ' + (err.response?.data?.error || err.response?.data?.detail || 'Unknown error'));
+      notification.error('Unable to Record Review', getApiErrorMessage(err, 'The review could not be recorded. Please try again.'));
     } finally {
       setActionLoading(prev => ({ ...prev, [id]: false }));
     }
+  };
+
+  const handleCriminalCheck = async (app) => {
+    setActionLoading(prev => ({ ...prev, [`criminal-${app.id}`]: true }));
+    try {
+      const res = await policeAPI.checkCriminalRecord(app.id);
+      setCriminalResults(prev => ({ ...prev, [app.id]: res.data }));
+      await fetchData();
+      notification.success('Criminal Record Check Complete', 'The application record has been updated with the check results.');
+    } catch (err) {
+      notification.error('Unable to Complete Criminal Check', getApiErrorMessage(err, 'The criminal record check could not be completed. Please try again.'));
+    } finally {
+      setActionLoading(prev => ({ ...prev, [`criminal-${app.id}`]: false }));
+    }
+  };
+
+  const handleRetryFace = (app) => {
+    navigate(`/citizen/face-verify?applicationId=${app.id}`);
   };
 
   const handleForwardApp = async (id, remarks) => {
@@ -102,9 +122,9 @@ export default function StaffDashboard() {
     try {
       await policeAPI.forward(id, { remarks: remarks || 'Reviewed and forwarded to Police Authority' });
       await fetchData();
-      alert('Application successfully forwarded to Police Authority for decision.');
+      notification.success('Application Forwarded Successfully', 'The application has been sent to Police Authority for review.');
     } catch (err) {
-      alert('Error forwarding application: ' + (err.response?.data?.error || err.response?.data?.detail || 'Unknown error'));
+      notification.error('Unable to Forward Application', getApiErrorMessage(err, 'The application could not be forwarded. Please try again.'));
     } finally {
       setActionLoading(prev => ({ ...prev, [id]: false }));
     }
@@ -115,9 +135,9 @@ export default function StaffDashboard() {
     try {
       await policeAPI.confirmApp(id, {});
       await fetchData();
-      alert('Application confirmed. Challan generated and sent to citizen.');
+      notification.success('Application Confirmed', 'The payment challan has been generated and sent to the citizen.');
     } catch (err) {
-      alert('Error confirming application: ' + (err.response?.data?.error || err.response?.data?.detail || 'Unknown error'));
+      notification.error('Unable to Confirm Application', getApiErrorMessage(err, 'The application could not be confirmed. Please try again.'));
     } finally {
       setActionLoading(prev => ({ ...prev, [id]: false }));
     }
@@ -130,12 +150,12 @@ export default function StaffDashboard() {
       await fetchData();
       const certNum = res.data?.certificate_number;
       if (certNum) {
-        alert(`Payment verified and certificate issued successfully!\nCertificate Number: ${certNum}`);
+        notification.success('Payment Verified Successfully', `The certificate has been issued. Certificate number: ${certNum}.`);
       } else {
-        alert(res.data?.message || 'Payment verified successfully.');
+        notification.success('Payment Verified Successfully', 'The payment status has been updated.');
       }
     } catch (err) {
-      alert('Error verifying payment: ' + (err.response?.data?.error || err.response?.data?.detail || 'Unknown error'));
+      notification.error('Unable to Verify Payment', getApiErrorMessage(err, 'The payment could not be verified. Please try again.'));
     } finally {
       setActionLoading(prev => ({ ...prev, [id]: false }));
     }
@@ -403,10 +423,32 @@ export default function StaffDashboard() {
                 <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs space-y-2">
                   <div className="flex justify-between items-center text-slate-400">
                     <span>AI Biometric Match Score:</span>
-                    <span className="font-mono font-bold text-amber-400">
-                      {app.face_confidence ? `${app.face_confidence.toFixed(1)}%` : app.nadra_details?.similarity_pct ? `${app.nadra_details.similarity_pct}%` : '88.5% (Verified)'}
+                    <span className={`font-mono font-bold ${app.status === 'REJECTED' ? 'text-red-400' : 'text-amber-400'}`}>
+                      {app.face_confidence ? `${app.face_confidence.toFixed(1)}%` : 'Not verified'}
                     </span>
                   </div>
+                  {app.status === 'REJECTED' && (
+                    <button onClick={() => handleRetryFace(app)} className="mt-2 w-full rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-left text-red-300 font-semibold">
+                      Face not matched. Ask citizen to try again →
+                    </button>
+                  )}
+                  {(app.status === 'CRIMINAL_CHECKED' || app.status === 'FACE_VERIFIED') && (
+                    <button
+                      onClick={() => handleCriminalCheck(app)}
+                      disabled={actionLoading[`criminal-${app.id}`]}
+                      className="mt-2 rounded-lg bg-purple-600 px-3 py-2 text-white font-bold"
+                    >
+                      {actionLoading[`criminal-${app.id}`] ? 'Checking...' : 'Run Criminal Record Check'}
+                    </button>
+                  )}
+                  {(criminalResults[app.id] || app.criminal_check) && (
+                    <div className="mt-2 rounded-lg bg-slate-900 p-3 text-xs">
+                      <strong className={((criminalResults[app.id] || app.criminal_check).result === 'CLEAN') ? 'text-emerald-400' : 'text-red-400'}>
+                        Criminal result: {(criminalResults[app.id] || app.criminal_check).result}
+                      </strong>
+                      <p className="mt-1 text-slate-400">{(criminalResults[app.id] || app.criminal_check).summary}</p>
+                    </div>
+                  )}
                   {app.nadra_details && (
                     <p className="text-slate-400 text-[11px]">
                       District: <strong className="text-slate-200">{app.nadra_details.district || app.applicant?.district || 'Karachi'}</strong> · Province: <strong className="text-slate-200">{app.nadra_details.province || app.applicant_province || 'Sindh'}</strong>
@@ -417,7 +459,7 @@ export default function StaffDashboard() {
                 <div className="flex flex-col gap-2 pt-1">
                   <span className="text-xs text-slate-400 font-bold">Action Required:</span>
                   
-                  {app.status === 'FACE_VERIFIED' && (
+                  {app.status === 'CRIMINAL_CHECKED' && (
                     <div className="flex flex-col gap-2">
                       <input
                         type="text"

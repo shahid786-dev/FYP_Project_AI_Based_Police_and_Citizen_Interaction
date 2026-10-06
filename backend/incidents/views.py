@@ -74,9 +74,12 @@ class EmergencySOSUpdateView(generics.UpdateAPIView):
     def update(self, request, *args, **kwargs):
         if request.user.role not in ['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']:
             return Response({'error': 'Only authorized police personnel can update SOS status.'}, status=status.HTTP_403_FORBIDDEN)
+        if set(request.data) - {'status', 'police_notes'}:
+            return Response({'error': 'Only status and police_notes can be updated.'}, status=status.HTTP_400_BAD_REQUEST)
         
         instance = self.get_object()
         old_status = instance.status
+        kwargs['partial'] = True
         response = super().update(request, *args, **kwargs)
         instance.refresh_from_db()
         

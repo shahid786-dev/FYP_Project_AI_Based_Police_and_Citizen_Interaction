@@ -1,11 +1,10 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { incidentsAPI } from '../api/apiClient';
-import { Shield, FileText, Upload, CheckCircle2, AlertTriangle, MapPin, Calendar, Clock, DollarSign, UserCheck, Loader2 } from 'lucide-react';
+import { Shield, Upload, CheckCircle2, AlertTriangle, MapPin, Calendar, Clock, DollarSign, Loader2 } from 'lucide-react';
 
 export default function ReportCrimePage() {
-  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [successData, setSuccessData] = useState(null);
   const [error, setError] = useState('');

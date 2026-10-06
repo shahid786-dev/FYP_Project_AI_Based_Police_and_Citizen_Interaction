@@ -24,6 +24,7 @@ import AboutUsPage           from './pages/AboutUsPage';
 import { TermsPage, PrivacyPage } from './pages/LegalPages';
 import CriminalRecordsPage  from './pages/CriminalRecordsPage';
 import AIChatbot             from './components/AIChatbot';
+import NotificationProvider from './components/NotificationProvider';
 
 function ProtectedRoute({ children, allowedRoles }) {
   const { isAuthenticated, role } = useSelector((s) => s.auth);
@@ -32,17 +33,10 @@ function ProtectedRoute({ children, allowedRoles }) {
   return children;
 }
 
-// Redirect police users to the correct portal based on role
-function PoliceRedirect() {
-  const { role } = useSelector(s => s.auth);
-  if (role === 'POLICE_AUTHORITY') return <Navigate to="/authority/dashboard" replace />;
-  if (role === 'POLICE_STAFF')     return <Navigate to="/staff/dashboard" replace />;
-  return <Navigate to="/login" replace />;
-}
-
 export default function App() {
   return (
     <BrowserRouter>
+      <NotificationProvider>
       <Routes>
         {/* ── Public ── */}
         <Route path="/"         element={<LandingPage />} />
@@ -59,8 +53,17 @@ export default function App() {
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/about" element={<AboutUsPage />} />
         <Route path="/track"    element={<TrackApplicationPage />} />
-        <Route path="/criminal-records" element={<CriminalRecordsPage />} />
-        <Route path="/blockchain" element={<BlockchainExplorer />} />
+        <Route path="/criminal-records" element={
+          <ProtectedRoute allowedRoles={['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']}>
+            <CriminalRecordsPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/blockchain" element={
+          <ProtectedRoute allowedRoles={['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']}>
+            <BlockchainExplorer />
+          </ProtectedRoute>
+        } />
+        <Route path="/verify/:certNumber" element={<DigitalCertificatePage />} />
         <Route path="/verify/certificate/:certNumber" element={<DigitalCertificatePage />} />
 
         {/* ── Citizen ── */}
@@ -94,11 +97,7 @@ export default function App() {
         } />
 
         {/* ── Legacy police route → smart redirect ── */}
-        <Route path="/police/dashboard" element={
-          <ProtectedRoute allowedRoles={['POLICE_STAFF', 'POLICE_AUTHORITY']}>
-            <PoliceRedirect />
-          </ProtectedRoute>
-        } />
+          {/* Removed obsolete combined police dashboard route */}
 
         {/* ── Super Admin ── */}
         <Route path="/admin/dashboard" element={
@@ -110,6 +109,7 @@ export default function App() {
       </Routes>
 
       <AIChatbot />
+      </NotificationProvider>
     </BrowserRouter>
   );
 }

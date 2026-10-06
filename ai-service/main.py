@@ -69,8 +69,16 @@ async def liveness_only(
     Runs liveness / anti-spoofing check only on the provided image.
     """
     live_bytes = await live_photo.read()
-    result     = check_liveness(live_bytes)
-    return result
+    try:
+        return check_liveness(live_bytes)
+    except Exception as exc:
+        return {
+            "liveness_score": 0.0,
+            "face_detected": False,
+            "anti_spoofing": "ERROR",
+            "method": "service_error",
+            "error": str(exc),
+        }
 
 
 if __name__ == "__main__":

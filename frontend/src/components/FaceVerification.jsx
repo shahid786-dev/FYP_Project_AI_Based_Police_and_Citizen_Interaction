@@ -13,11 +13,8 @@
  * 7. Verification report is shown with blockchain hash
  */
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import axios from 'axios';
-
-// ─── Constants ─────────────────────────────────────────────────────────────
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { API, getAccessToken, getStoredAuth } from '../api/apiClient';
 
 // Webcam capture quality (0.9 = 90% JPEG quality)
 const CAPTURE_QUALITY = 0.9;
@@ -25,8 +22,7 @@ const CAPTURE_QUALITY = 0.9;
 // ─── Helper: get JWT token ──────────────────────────────────────────────────
 const getAuthToken = () => {
   try {
-    const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
-    return stored?.token || '';
+    return getAccessToken();
   } catch {
     return '';
   }
@@ -119,14 +115,14 @@ const FaceVerification = ({ applicationId = null }) => {
   const [inputCnic, setInputCnic] = useState(() => {
     // Pre-fill with the authenticated citizen's own registered CNIC
     try {
-      const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
-      return stored?.user?.cnic || '';
+      return getStoredAuth()?.user?.cnic || '';
     } catch { return ''; }
   });
   const [cnicData, setCnicData] = useState(null);
   
   const [capturedImage, setCapturedImage] = useState(null); // base64
   const [report, setReport] = useState(null);
+  const [livenessScore, setLivenessScore] = useState(null);
   const [message, setMessage] = useState('');
   const [errorText, setErrorText] = useState('');
   const [cameraError, setCameraError] = useState('');
@@ -142,9 +138,7 @@ const FaceVerification = ({ applicationId = null }) => {
   useEffect(() => {
     const token = getAuthToken();
     if (!token) return;
-    axios.get(`${API_BASE}/api/face-verify/status/`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    API.get('/api/face-verify/status/')
       .then(res => setStoreStatus(res.data))
       .catch(() => setStoreStatus({ ready: false, error: 'Could not reach server' }));
   }, []);
@@ -158,12 +152,7 @@ const FaceVerification = ({ applicationId = null }) => {
     }
     setPhase('cnic_verifying');
     try {
-      const token = getAuthToken();
-      const response = await axios.post(
-        `${API_BASE}/api/face-verify/verify-cnic/`,
-        { cnic: inputCnic },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const response = await API.post('/api/face-verify/verify-cnic/', { cnic: inputCnic });
       
       if (response.data.found) {
         if (!response.data.has_face_embedding) {
@@ -285,24 +274,18 @@ const FaceVerification = ({ applicationId = null }) => {
         formData.append('application_id', applicationId);
       }
 
-      const token = getAuthToken();
-      const response = await axios.post(
-        `${API_BASE}/api/face-verify/verify-with-cnic/`,
-        formData,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'multipart/form-data',
-          },
-        }
-      );
+      const response = await API.post('/api/face-verify/verify-with-cnic/', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
 
       setReport(response.data.report);
+      setLivenessScore(response.data.liveness_score ?? null);
       setMessage(response.data.message);
       setPhase('result');
 
     } catch (err) {
       const detail =
+        err.response?.data?.error ||
         err.response?.data?.errors ||
         err.response?.data?.detail ||
         err.message ||
@@ -315,6 +298,7 @@ const FaceVerification = ({ applicationId = null }) => {
   const handleReset = () => {
     setCapturedImage(null);
     setReport(null);
+    setLivenessScore(null);
     setMessage('');
     setErrorText('');
     setCameraError('');
@@ -672,6 +656,11 @@ const FaceVerification = ({ applicationId = null }) => {
             <ReportField label="Father Name" value={report.matched_father_name || '—'} />
             <ReportField label="Matched CNIC" value={report.matched_cnic || '—'} />
             <ReportField label="Similarity" value={`${report.similarity_pct?.toFixed(2)}%`} highlight />
+            <ReportField
+              label="Liveness"
+              value={livenessScore === null ? '—' : `${(livenessScore * 100).toFixed(1)}%`}
+              highlight={livenessScore !== null && livenessScore >= 0.7}
+            />
             <ReportField label="Confidence" value={report.confidence_level_display || '—'} />
             <ReportField label="Status" value={report.status_display} />
             <ReportField label="Model" value={report.model_used} />

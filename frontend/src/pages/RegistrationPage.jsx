@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  Shield, Upload, Camera, CheckCircle, ChevronRight, ChevronLeft,
-  Eye, EyeOff, User, AlertCircle, Copy, Phone
+  Shield, CheckCircle, ChevronRight, ChevronLeft,
+  Eye, EyeOff, AlertCircle, Copy, Phone
 } from 'lucide-react';
 import { authAPI } from '../api/apiClient';
 
@@ -14,7 +14,6 @@ export default function RegistrationPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [showPwd, setShowPwd] = useState(false);
-  const [photo, setPhoto] = useState(null);
   const [agreed, setAgreed] = useState(false);
   const [otpSent, setOtpSent] = useState(false);
   const [serverOtp, setServerOtp] = useState(''); // OTP from server (dev mode)
@@ -96,11 +95,6 @@ export default function RegistrationPage() {
     } catch {
       setError('Invalid or expired OTP. Please try again.');
     } finally { setLoading(false); }
-  };
-
-  const handlePhoto = (e) => {
-    const file = e.target.files[0];
-    if (file) setPhoto(URL.createObjectURL(file));
   };
 
   const copyOtp = () => {
@@ -197,28 +191,6 @@ export default function RegistrationPage() {
                   </select>
                 </div>
 
-                {/* Photo Upload */}
-                <div className="sm:col-span-2">
-                  <label className="label-text">Profile Photo</label>
-                  <div className="flex items-center gap-4">
-                    <div className="w-20 h-20 rounded-2xl border-2 border-dashed border-white/20 flex items-center justify-center bg-white/5 overflow-hidden flex-shrink-0">
-                      {photo
-                        ? <img src={photo} alt="Profile" className="w-full h-full object-cover" />
-                        : <User size={32} className="text-white/20" />}
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <label className="btn-secondary text-sm cursor-pointer flex items-center gap-2">
-                        <Upload size={16} /> Upload Photo
-                        <input type="file" accept="image/*" className="hidden" onChange={handlePhoto} />
-                      </label>
-                      {photo && (
-                        <span className="text-green-400 text-xs flex items-center gap-1">
-                          <CheckCircle size={12} /> Photo uploaded
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           )}

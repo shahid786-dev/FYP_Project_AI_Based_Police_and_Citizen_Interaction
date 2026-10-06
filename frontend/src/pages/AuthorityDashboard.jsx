@@ -1,13 +1,9 @@
 import { useState, useEffect } from 'react';
-import {
-  Shield, Users, FileText, CheckCircle, XCircle, AlertTriangle,
-  BarChart2, Clock, Eye, Lock, Download, RefreshCw, Search,
-  PlusCircle, Trash2, Edit3, Activity, Database, ChevronDown,
-  ChevronUp, Fingerprint, Award, DollarSign
-} from 'lucide-react';
+import { Shield, RefreshCw, ChevronDown, ChevronUp, Award } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { useSelector } from 'react-redux';
-import { authorityAPI, policeAPI, adminAPI, incidentsAPI } from '../api/apiClient';
+import { authorityAPI, policeAPI, incidentsAPI } from '../api/apiClient';
+import { useNotification, getApiErrorMessage } from '../components/notificationContext';
 
 function StaffModal({ staff, onClose, onSaved }) {
   const [form, setForm] = useState(
@@ -16,6 +12,7 @@ function StaffModal({ staff, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [successOtp, setSuccessOtp] = useState('');
+  const notification = useNotification();
   const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
 
   const handleSave = async () => {
@@ -23,10 +20,12 @@ function StaffModal({ staff, onClose, onSaved }) {
     try {
       if (staff) {
         await authorityAPI.updateStaff(staff.id, form);
+        notification.success('Staff Account Updated', 'The staff member’s information has been saved.');
         onSaved();
       } else {
         const res = await authorityAPI.createStaff(form);
         const otp = res.data?.otp_code;
+        notification.success('Staff Account Created', 'The new staff account is ready. First-login instructions are shown below.');
         if (otp) {
           // Show OTP before closing, so admin can give it to the new staff member
           setSuccessOtp(otp);
@@ -35,7 +34,9 @@ function StaffModal({ staff, onClose, onSaved }) {
         }
       }
     } catch(e) {
-      setErr(e.response?.data?.detail || JSON.stringify(e.response?.data) || 'Save failed.');
+      const message = getApiErrorMessage(e, 'The staff account could not be saved. Please try again.');
+      setErr(message);
+      notification.error('Unable to Save Staff Account', message);
     } finally { setSaving(false); }
   };
 
@@ -83,7 +84,7 @@ function StaffModal({ staff, onClose, onSaved }) {
 }
 
 /* ── Application Decision Row ── */
-function AppRow({ app, onAction }) {
+function AppRow({ app, onAction, notification }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [acting, setActing] = useState('');
@@ -92,8 +93,16 @@ function AppRow({ app, onAction }) {
     setActing(decision);
     try {
       await authorityAPI.decide(app.id, { decision, reason });
-      onAction(app.id, decision === 'APPROVE' ? 'AUTHORITY_APPROVED' : 'AUTHORITY_REJECTED');
-    } catch { alert('Action failed.'); }
+      const refreshed = await onAction(app.id, decision === 'APPROVE' ? 'AUTHORITY_APPROVED' : 'AUTHORITY_REJECTED');
+      notification.success(
+        decision === 'APPROVE' ? 'Application Approved' : 'Application Rejected',
+        refreshed
+          ? 'The authority decision has been recorded and the application list is up to date.'
+          : 'The authority decision was recorded, but the application list could not be refreshed.',
+      );
+    } catch (error) {
+      notification.error('Unable to Record Decision', getApiErrorMessage(error, 'The authority decision could not be saved. Please try again.'));
+    }
     finally { setActing(''); }
   };
 
@@ -101,8 +110,16 @@ function AppRow({ app, onAction }) {
     setActing('CERT');
     try {
       await authorityAPI.issueCert(app.id);
-      onAction(app.id, 'COMPLETED');
-    } catch(e) { alert(e.response?.data?.error || 'Certificate generation failed.'); }
+      const refreshed = await onAction(app.id, 'COMPLETED');
+      notification.success(
+        'Certificate Issued Successfully',
+        refreshed
+          ? 'The application status and certificate details have been refreshed.'
+          : 'The certificate was issued, but the application list could not be refreshed.',
+      );
+    } catch(e) {
+      notification.error('Unable to Issue Certificate', getApiErrorMessage(e, 'The certificate could not be generated. Please try again.'));
+    }
     finally { setActing(''); }
   };
 
@@ -129,6 +146,13 @@ function AppRow({ app, onAction }) {
             <div><span className="text-slate-500 block text-[10px]">EMAIL</span><span className="text-slate-200">{app.applicant?.email}</span></div>
             <div><span className="text-slate-500 block text-[10px]">DISTRICT</span><span className="text-slate-200">{app.applicant?.district||'—'}</span></div>
             <div><span className="text-slate-500 block text-[10px]">SUBMITTED</span><span className="text-slate-200">{new Date(app.submitted_at).toLocaleDateString()}</span></div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 border-t border-slate-800 pt-3">
+            <div><span className="text-slate-500 block text-[10px]">FACE SCORE</span><span className="text-cyan-300 font-mono font-bold">{app.face_confidence ? `${app.face_confidence.toFixed(1)}%` : 'Not verified'}</span></div>
+            <div><span className="text-slate-500 block text-[10px]">LIVENESS</span><span className="text-cyan-300 font-mono font-bold">{app.liveness_score ? `${(app.liveness_score * 100).toFixed(1)}%` : 'Not available'}</span></div>
+            <div><span className="text-slate-500 block text-[10px]">CRIMINAL CHECK</span><span className={`font-bold ${app.criminal_check?.result === 'CLEAN' ? 'text-emerald-400' : 'text-amber-400'}`}>{app.criminal_check?.result || 'Pending'}</span></div>
+            <div><span className="text-slate-500 block text-[10px]">STAFF NOTES</span><span className="text-slate-200">{app.staff_notes || 'No notes yet'}</span></div>
           </div>
 
           {canDecide && (
@@ -162,34 +186,91 @@ function AppRow({ app, onAction }) {
 
 export default function AuthorityDashboard() {
   const { user } = useSelector(s => s.auth);
+  const notification = useNotification();
   const [tab, setTab] = useState('applications');
   const [apps, setApps] = useState([]);
   const [staff, setStaff] = useState([]);
   const [sosList, setSosList] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
+  const [loadErrors, setLoadErrors] = useState([]);
 
-  const loadData = async () => {
-    setLoading(true);
+  async function loadData() {
+    const results = await Promise.allSettled([
+      policeAPI.allApplications(),
+      authorityAPI.listStaff(),
+      incidentsAPI.listSOS(),
+    ]);
+    const labels = ['verification applications', 'station staff', 'SOS alerts'];
+    const failedSections = results.flatMap((result, index) => {
+      if (result.status === 'fulfilled') {
+        const setter = [setApps, setStaff, setSosList][index];
+        setter(result.value.data || []);
+        return [];
+      }
+      return [labels[index]];
+    });
+    setLoadErrors(failedSections);
+    return failedSections;
+  }
+
+  useEffect(() => {
+    const timer = setTimeout(loadData, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const handleAction = async () => {
+    const failedSections = await loadData();
+    return !failedSections.includes('verification applications');
+  };
+
+  const toggleStaff = async (officer) => {
     try {
-      const [appRes, staffRes, sosRes] = await Promise.all([
-        policeAPI.allApplications().catch(() => ({ data: [] })),
-        authorityAPI.listStaff().catch(() => ({ data: [] })),
-        incidentsAPI.listSOS().catch(() => ({ data: [] })),
-      ]);
-      setApps(appRes.data || []);
-      setStaff(staffRes.data || []);
-      setSosList(sosRes.data || []);
-    } finally {
-      setLoading(false);
+      await authorityAPI.toggleStaff(officer.id);
+      const failedSections = await loadData();
+      notification.success(
+        'Staff Status Updated',
+        failedSections.includes('station staff')
+          ? `${officer.full_name}’s status was updated, but the staff list could not be refreshed.`
+          : `${officer.full_name}’s account status has been updated.`,
+      );
+    } catch (error) {
+      notification.error('Unable to Update Staff Status', getApiErrorMessage(error, 'The staff account status could not be changed. Please try again.'));
     }
   };
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  const deleteStaff = async (officer) => {
+    if (!window.confirm(`Delete ${officer.full_name}'s staff account?`)) return;
+    try {
+      await authorityAPI.deleteStaff(officer.id);
+      const failedSections = await loadData();
+      notification.success(
+        'Staff Account Deleted',
+        failedSections.includes('station staff')
+          ? 'The account was deleted, but the staff list could not be refreshed.'
+          : 'The staff list has been refreshed.',
+      );
+    } catch (error) {
+      notification.error('Unable to Delete Staff Account', getApiErrorMessage(error, 'The staff account could not be deleted. Please try again.'));
+    }
+  };
 
-  const handleAction = (id, newStatus) => setApps(prev => prev.map(a => a.id===id ? {...a, status:newStatus} : a));
+  const updateSOS = async (sos, nextStatus) => {
+    try {
+      await incidentsAPI.updateSOSStatus(sos.id, {
+        status: nextStatus,
+        police_notes: `Status updated by ${user?.full_name || 'Police Authority'}`,
+      });
+      const failedSections = await loadData();
+      notification.success(
+        'Emergency Status Updated',
+        failedSections.includes('SOS alerts')
+          ? 'The status was updated, but the alert list could not be refreshed.'
+          : 'The SOS alert list has been refreshed.',
+      );
+    } catch (error) {
+      notification.error('Unable to Update Emergency Status', getApiErrorMessage(error, 'The SOS alert status could not be updated. Please try again.'));
+    }
+  };
 
   return (
     <DashboardLayout role="police" userName={user?.full_name || 'Authority'}>
@@ -208,6 +289,12 @@ export default function AuthorityDashboard() {
           <RefreshCw size={14} className="inline mr-1"/> Refresh Ledger
         </button>
       </div>
+
+      {loadErrors.length > 0 && (
+        <p role="alert" className="mb-4 rounded-xl border border-red-500/30 bg-red-950/30 px-4 py-3 text-xs text-red-300">
+          Could not load {loadErrors.join(', ')}. Check your permissions or refresh the dashboard.
+        </p>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 overflow-x-auto pb-1 text-xs font-bold">
@@ -228,7 +315,7 @@ export default function AuthorityDashboard() {
           {apps.length === 0 ? (
             <p className="text-slate-500 text-xs text-center py-8">No active applications in queue.</p>
           ) : (
-            apps.map(a => <AppRow key={a.id} app={a} onAction={handleAction}/>)
+            apps.map(a => <AppRow key={a.id} app={a} onAction={handleAction} notification={notification}/>)
           )}
         </div>
       )}
@@ -254,6 +341,13 @@ export default function AuthorityDashboard() {
                 </div>
                 <p className="text-slate-400 font-mono">CNIC: {s.cnic}</p>
                 <p className="text-slate-400">Email: {s.email}</p>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button onClick={() => setModal(s)} className="rounded-lg bg-slate-800 px-3 py-1.5 font-bold text-slate-200">Edit</button>
+                  <button onClick={() => toggleStaff(s)} className="rounded-lg bg-blue-950 px-3 py-1.5 font-bold text-blue-200">
+                    {s.is_active ? 'Deactivate' : 'Activate'}
+                  </button>
+                  <button onClick={() => deleteStaff(s)} className="rounded-lg bg-red-950 px-3 py-1.5 font-bold text-red-200">Delete</button>
+                </div>
               </div>
             ))}
           </div>
@@ -271,6 +365,14 @@ export default function AuthorityDashboard() {
               </div>
               <p className="text-slate-200">Location: {sos.location_address}</p>
               <p className="text-slate-400">Contact: {sos.contact_number}</p>
+              {sos.status !== 'CLOSED' && (
+                <button
+                  onClick={() => updateSOS(sos, ({ RECEIVED: 'ACKNOWLEDGED', ACKNOWLEDGED: 'DISPATCHED', DISPATCHED: 'RESOLVED', RESOLVED: 'CLOSED' })[sos.status])}
+                  className="rounded-lg bg-red-800 px-3 py-1.5 font-bold text-white hover:bg-red-700"
+                >
+                  {({ RECEIVED: 'Acknowledge', ACKNOWLEDGED: 'Dispatch unit', DISPATCHED: 'Mark resolved', RESOLVED: 'Close alert' })[sos.status] || 'Update alert'}
+                </button>
+              )}
             </div>
           ))}
         </div>

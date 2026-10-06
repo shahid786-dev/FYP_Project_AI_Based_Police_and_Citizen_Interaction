@@ -30,15 +30,17 @@ export default function AIFaceRecognitionPage() {
   useEffect(() => {
     if (phase !== 'scanning' || checkIdx < 0) return;
     if (checkIdx >= CHECKS.length) {
-      setPhase('done');
-      return;
+      const timer = setTimeout(() => setPhase('done'), 0);
+      return () => clearTimeout(timer);
     }
     const duration = CHECKS[checkIdx].duration;
     const steps = 30;
     const perStep = duration / steps;
     const baseProgress = (checkIdx / CHECKS.length) * 100;
     let i = 0;
-    setChecks(prev => prev.map((c,idx) => idx === checkIdx ? 'running' : c));
+    const checkTimer = setTimeout(() => {
+      setChecks(prev => prev.map((c,idx) => idx === checkIdx ? 'running' : c));
+    }, 0);
     const iv = setInterval(() => {
       i++;
       const segProgress = (i / steps) * (100 / CHECKS.length);
@@ -50,7 +52,10 @@ export default function AIFaceRecognitionPage() {
         setCheckIdx(prev => prev + 1);
       }
     }, perStep);
-    return () => clearInterval(iv);
+    return () => {
+      clearTimeout(checkTimer);
+      clearInterval(iv);
+    };
   }, [checkIdx, phase]);
 
   const reset = () => { setPhase('idle'); setProgress(0); setCheckIdx(-1); setChecks(CHECKS.map(() => 'pending')); setConfidence(0); };

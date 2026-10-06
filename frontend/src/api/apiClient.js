@@ -1,18 +1,46 @@
 import axios from 'axios';
+import {
+  clearStoredAuth,
+  getActiveRole,
+  getStoredAuth as readStoredAuth,
+} from '../store/authStorage';
 
-// Django backend runs on port 8000
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const AI_BASE_URL = import.meta.env.VITE_AI_API_BASE_URL || 'http://localhost:8001';
+
 export const API = axios.create({
-  baseURL: 'http://localhost:8000',
+  baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
 });
 
-// FastAPI AI microservice runs on port 8001
-export const AI_API = axios.create({ baseURL: 'http://localhost:8001' });
+export const AI_API = axios.create({ baseURL: AI_BASE_URL });
 
-// Attach JWT token automatically from localStorage
+export function getStoredAuth() {
+  return readStoredAuth();
+}
+
+export function getAccessToken() {
+  const stored = getStoredAuth();
+  return stored?.access || stored?.token || '';
+}
+
+// Attach the active portal's persisted JWT to protected API requests.
 API.interceptors.request.use((config) => {
-  const stored = JSON.parse(localStorage.getItem('pakverify_auth') || 'null');
-  if (stored?.token) config.headers.Authorization = `Bearer ${stored.token}`;
+  const requestPath = (config.url || '').split('?')[0].replace(/\/+$/, '');
+  const publicAuthPaths = [
+    '/api/auth/register',
+    '/api/auth/login',
+    '/api/auth/login/face',
+    '/api/auth/verify-otp',
+    '/api/auth/request-reset',
+    '/api/auth/confirm-reset',
+    '/api/auth/reset-password',
+  ];
+  if (publicAuthPaths.includes(requestPath)) return config;
+
+  const token = getAccessToken();
+  if (token) config.authRole = getActiveRole();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
@@ -20,9 +48,18 @@ API.interceptors.request.use((config) => {
 API.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('pakverify_auth');
-      window.location.href = '/login';
+    const role = error.config?.authRole;
+    if (error.response?.status === 401 && role) {
+      clearStoredAuth(role);
+      if (getActiveRole() === role) {
+        const loginPath = {
+          CITIZEN: '/login',
+          POLICE_STAFF: '/login/staff',
+          POLICE_AUTHORITY: '/login/admin',
+          SUPER_ADMIN: '/login/admin',
+        }[role] || '/login';
+        window.location.assign(loginPath);
+      }
     }
     return Promise.reject(error);
   }
@@ -66,6 +103,7 @@ export const policeAPI = {
   criminalSearch:  (data, fd) => fd
     ? API.post('/api/criminals/search/', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
     : API.post('/api/criminals/search/', data),
+  checkCriminalRecord: (applicationId) => API.post(`/api/criminals/applications/${applicationId}/check/`),
   analytics:       ()         => API.get('/api/police/analytics/'),
 };
 
@@ -118,7 +156,7 @@ export const certAPI = {
 export const incidentsAPI = {
   sendSOS:          (data)         => API.post('/api/incidents/sos/', data),
   listSOS:          ()             => API.get('/api/incidents/sos/list/'),
-  updateSOSStatus:  (id, data)     => API.put(`/api/incidents/sos/${id}/status/`, data),
+  updateSOSStatus:  (id, data)     => API.patch(`/api/incidents/sos/${id}/status/`, data),
   
   createComplaint:  (data)         => API.post('/api/incidents/complaints/', data),
   listComplaints:   (category)     => API.get('/api/incidents/complaints/', { params: { category } }),
@@ -132,4 +170,3 @@ export const incidentsAPI = {
   
   trackUnified:     (trackId)      => API.get(`/api/incidents/track/${encodeURIComponent(trackId)}/`),
 };
-

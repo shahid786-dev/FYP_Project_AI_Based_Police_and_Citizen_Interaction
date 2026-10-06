@@ -26,6 +26,7 @@ class ApplicationSerializer(serializers.ModelSerializer):
     challan = ChallanSerializer(read_only=True)
     certificate = CertificateSerializer(read_only=True)
     nadra_details = serializers.SerializerMethodField()
+    criminal_check = serializers.SerializerMethodField()
 
     class Meta:
         model = Application
@@ -33,8 +34,20 @@ class ApplicationSerializer(serializers.ModelSerializer):
             'id', 'applicant', 'application_type', 'purpose', 'current_address',
             'nearest_station', 'applicant_province', 'status', 'notes', 'tracking_id',
             'face_confidence', 'liveness_score', 'submitted_at', 'updated_at',
-            'documents', 'challan', 'certificate', 'nadra_details'
+            'documents', 'challan', 'certificate', 'nadra_details', 'criminal_check'
         )
+
+    def get_criminal_check(self, obj):
+        try:
+            check = obj.criminal_check
+        except Exception:
+            return None
+        return {
+            'result': check.result,
+            'summary': check.report_summary,
+            'checked_at': check.checked_at,
+            'matched_record_id': check.matched_record_id,
+        }
 
     def get_nadra_details(self, obj):
         from django.db import models

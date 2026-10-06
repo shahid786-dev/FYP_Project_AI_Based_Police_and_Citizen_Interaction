@@ -125,7 +125,15 @@ class StaffApplicationQueueView(generics.ListAPIView):
     permission_classes = [StaffWorkflowPermission]
 
     def get_queryset(self):
-        return Application.objects.all().order_by('-submitted_at')
+        return Application.objects.filter(
+            status__in=[
+                'PENDING', 'FACE_VERIFIED', 'REJECTED', 'CRIMINAL_CHECKED', 'STAFF_REVIEWED',
+                'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED',
+                'AUTHORITY_REJECTED', 'STAFF_CONFIRMED', 'PAYMENT_PENDING',
+                'PAYMENT_SUBMITTED', 'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED',
+                'COMPLETED',
+            ]
+        ).order_by('-submitted_at')
 
 
 class UploadDocumentView(APIView):
@@ -161,7 +169,7 @@ class AIFaceVerifyView(APIView):
         except Application.DoesNotExist:
             return Response({'error': 'Application not found'}, status=404)
 
-        if application.status != 'PENDING':
+        if application.status not in ['PENDING', 'REJECTED']:
             if application.status in ['CRIMINAL_CHECKED', 'STAFF_REVIEWED', 'FORWARDED_TO_ADMIN', 'AUTHORITY_APPROVED', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED', 'PAYMENT_VERIFIED', 'PAYMENT_CONFIRMED', 'COMPLETED']:
                 return Response({
                     'message': 'Face verification already completed successfully.',
@@ -854,7 +862,7 @@ class PublicCertificateVerifyView(APIView):
         ).first()
 
         return Response({
-            'valid':               cert.status == 'VALID',
+            'valid':               cert.status == 'VALID' and cert.validity_expiry >= timezone.localdate(),
             'certificate_number':  cert.certificate_number,
             'applicant_name':      applicant.full_name,
             'cnic':                masked_cnic,

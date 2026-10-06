@@ -73,7 +73,7 @@ export default function DigitalCertificatePage() {
   // otherwise fall back to window.location.origin + cert number
   const qrTarget = cert?.verification_url
     || (cert?.certificate_number
-      ? `${window.location.origin}/verify/certificate/${cert.certificate_number}`
+      ? `${window.location.origin}/verify/${cert.certificate_number}`
       : null);
 
   const print = () => window.print();
@@ -146,7 +146,9 @@ export default function DigitalCertificatePage() {
       <div className="glass-card p-4 border border-green-400/30 bg-green-400/5 flex items-center gap-3 mb-6">
         <CheckCircle size={20} className="text-green-400 flex-shrink-0"/>
         <div className="flex-1">
-          <p className="text-green-400 font-semibold text-sm">Verified &amp; Authentic Certificate</p>
+          <p className={`font-semibold text-sm ${cert?.valid ? 'text-green-400' : 'text-red-400'}`}>
+            {cert?.valid ? '✓ VALID CERTIFICATE' : 'INVALID OR EXPIRED CERTIFICATE'}
+          </p>
           <p className="text-white/40 text-xs">This certificate is digitally signed and can be verified using the QR code below.</p>
         </div>
         <span className="font-mono text-cyan-400 text-xs border border-cyan-400/30 px-2 py-1 rounded-lg">

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { incidentsAPI } from '../api/apiClient';
-import { Shield, HeartHandshake, AlertTriangle, Lock, Upload, CheckCircle2, PhoneCall, Loader2 } from 'lucide-react';
+import { Shield, HeartHandshake, AlertTriangle, Lock, Upload, CheckCircle2, Loader2 } from 'lucide-react';
 
 export default function WomenSafetyPage() {
   const [loading, setLoading] = useState(false);
@@ -20,16 +20,6 @@ export default function WomenSafetyPage() {
     priority: 'HIGH',
     suspect_details: '',
   });
-
-  const categories = [
-    'Street Harassment',
-    'Stalking',
-    'Workplace Harassment',
-    'Unwanted Calls / Messages',
-    'Online / Social Media Harassment',
-    'Public Place Incident',
-    'Other Threat',
-  ];
 
   const handleSubmit = async (e) => {
     e.preventDefault();

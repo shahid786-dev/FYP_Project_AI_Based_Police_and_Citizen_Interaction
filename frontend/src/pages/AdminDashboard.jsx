@@ -1,13 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSelector } from 'react-redux';
 import {
   Users, Shield, FileText, AlertTriangle, CheckCircle, TrendingUp,
-  Activity, Eye, Lock, Download, RefreshCw, Search, XCircle,
-  Clock, Database, BarChart2, Bell, MapPin, Plus, Trash2, RefreshCcw,
+  Activity, Lock, Download, RefreshCw, Search, XCircle,
+  Database, BarChart2, MapPin, Plus, Trash2, RefreshCcw,
   UserCheck, UserX
 } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
-import { authorityAPI, policeAPI, applicationAPI } from '../api/apiClient';
+import { authorityAPI, applicationAPI, policeAPI } from '../api/apiClient';
+import { useNotification, getApiErrorMessage } from '../components/notificationContext';
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
@@ -29,59 +30,65 @@ const PIE_DATA = [
   { name:'Others',         value:5,  color:'#6366f1' },
 ];
 
-const AUDIT_LOGS = [
-  { action:'Application PV-2025-0042 Approved',   user:'DSP Tariq',       time:'2025-05-06 14:22', type:'approval' },
-  { action:'Fraud Alert — Duplicate CNIC detected',user:'AI System',       time:'2025-05-06 13:15', type:'fraud' },
-  { action:'New Police Staff account created',     user:'Admin Bilal',     time:'2025-05-06 11:30', type:'admin' },
-  { action:'Certificate CRT-2025-041789 issued',   user:'System',         time:'2025-05-06 09:05', type:'cert' },
-  { action:'Login attempt blocked — 5 failures',   user:'Unknown IP',     time:'2025-05-06 08:47', type:'security' },
-  { action:'Application PV-2025-0039 Rejected',    user:'DSP Tariq',       time:'2025-05-05 16:40', type:'rejection' },
-];
+const AUDIT_LOGS = [];
 
-const STAFF = [
-  { name:'DSP Muhammad Tariq', station:'Gulberg PS',   apps:47, approved:41, status:'active' },
-  { name:'DSP Sara Hussain',   station:'DHA PS',        apps:38, approved:33, status:'active' },
-  { name:'SI Ahmed Raza',      station:'Model Town PS', apps:29, approved:24, status:'active' },
-  { name:'ASI Bilal Khan',     station:'Cantt PS',      apps:19, approved:15, status:'inactive' },
-];
-
-const FRAUD_ALERTS = [
-  { id:'FA-001', desc:'Duplicate CNIC submission detected', cnic:'35202-XXXXX-X', severity:'high',   time:'13:15' },
-  { id:'FA-002', desc:'AI Deepfake detected in photo',      cnic:'35201-XXXXX-X', severity:'critical', time:'11:42' },
-  { id:'FA-003', desc:'Multiple applications from same IP', cnic:'Multiple',       severity:'medium', time:'09:30' },
-];
+const FRAUD_ALERTS = [];
 
 export default function AdminDashboard() {
   const { user } = useSelector(s => s.auth);
+  const notification = useNotification();
   const [activeSection, setActiveSection] = useState('overview');
   const [staffList, setStaffList] = useState([]);
   const [applications, setApplications] = useState([]);
+  const [analytics, setAnalytics] = useState(null);
   const [loadingStaff, setLoadingStaff] = useState(false);
   const [showAddStaff, setShowAddStaff] = useState(false);
   const [newStaff, setNewStaff] = useState({ full_name: '', email: '', cnic: '', password: 'Staff@1234' });
   const [staffError, setStaffError] = useState('');
   const [savingStaff, setSavingStaff] = useState(false);
 
-  useEffect(() => {
-    fetchStaff();
-    fetchApplications();
-  }, []);
-
-  const fetchStaff = async () => {
+  const fetchStaff = useCallback(async () => {
     setLoadingStaff(true);
     try {
       const res = await authorityAPI.listStaff();
       setStaffList(res.data || []);
-    } catch { setStaffList([]); }
+      return true;
+    } catch (error) {
+      notification.error('Unable to Load Staff', getApiErrorMessage(error, 'The staff directory could not be loaded.'));
+      return false;
+    }
     finally { setLoadingStaff(false); }
-  };
+  }, [notification]);
 
-  const fetchApplications = async () => {
+  const fetchApplications = useCallback(async () => {
     try {
       const res = await applicationAPI.list();
       setApplications(res.data || []);
-    } catch { setApplications([]); }
-  };
+      return true;
+    } catch (error) {
+      notification.error('Unable to Load Applications', getApiErrorMessage(error, 'Applications could not be loaded.'));
+      return false;
+    }
+  }, [notification]);
+
+  const fetchAnalytics = useCallback(async () => {
+    try {
+      const res = await policeAPI.analytics();
+      setAnalytics(res.data || null);
+    } catch (error) {
+      setAnalytics(null);
+      notification.error('Unable to Load Analytics', getApiErrorMessage(error, 'System analytics could not be loaded.'));
+    }
+  }, [notification]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchStaff();
+      fetchApplications();
+      fetchAnalytics();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [fetchAnalytics, fetchApplications, fetchStaff]);
 
   const handleAddStaff = async () => {
     setSavingStaff(true); setStaffError('');
@@ -89,10 +96,17 @@ export default function AdminDashboard() {
       await authorityAPI.createStaff({ ...newStaff, role: 'POLICE_STAFF' });
       setShowAddStaff(false);
       setNewStaff({ full_name: '', email: '', cnic: '', password: 'Staff@1234' });
-      fetchStaff();
+      const refreshed = await fetchStaff();
+      notification.success(
+        'Staff Account Created',
+        refreshed ? 'The staff directory has been refreshed.' : 'The account was created, but the staff directory could not be refreshed.',
+      );
     } catch (err) {
       const data = err.response?.data;
-      setStaffError(data?.email?.[0] || data?.cnic?.[0] || data?.error || 'Failed to create staff.');
+      const message = data?.email?.[0] || data?.cnic?.[0]
+        || getApiErrorMessage(err, 'The staff account could not be created. Please try again.');
+      setStaffError(message);
+      notification.error('Unable to Create Staff Account', message);
     } finally { setSavingStaff(false); }
   };
 
@@ -100,28 +114,55 @@ export default function AdminDashboard() {
     if (!window.confirm('Delete this staff member?')) return;
     try {
       await authorityAPI.deleteStaff(id);
-      fetchStaff();
-    } catch { alert('Could not delete staff.'); }
+      const refreshed = await fetchStaff();
+      notification.success(
+        'Staff Account Deleted',
+        refreshed ? 'The staff directory has been refreshed.' : 'The account was deleted, but the staff directory could not be refreshed.',
+      );
+    } catch (error) {
+      notification.error('Unable to Delete Staff Account', getApiErrorMessage(error, 'The staff account could not be deleted. Please try again.'));
+    }
   };
 
   const handleToggleStaff = async (id) => {
     try {
       await authorityAPI.toggleStaff(id);
-      fetchStaff();
-    } catch { alert('Could not toggle staff status.'); }
+      const refreshed = await fetchStaff();
+      notification.success(
+        'Staff Status Updated',
+        refreshed ? 'The staff directory has been refreshed.' : 'The status was updated, but the staff directory could not be refreshed.',
+      );
+    } catch (error) {
+      notification.error('Unable to Update Staff Status', getApiErrorMessage(error, 'The staff account status could not be changed. Please try again.'));
+    }
   };
 
   const handleDecision = async (id, decision) => {
     try {
       const reason = decision === 'REJECT' ? prompt('Enter reason for rejection:') || 'Rejected by Admin' : 'Approved by Admin';
       await authorityAPI.decide(id, { decision, reason });
-      fetchApplications();
-    } catch { alert('Error submitting decision.'); }
+      const [applicationsRefreshed] = await Promise.all([fetchApplications(), fetchAnalytics()]);
+      notification.success(
+        decision === 'APPROVE' ? 'Application Approved' : 'Application Rejected',
+        applicationsRefreshed
+          ? 'The administrative decision has been recorded and application data is up to date.'
+          : 'The administrative decision was recorded, but the application list could not be refreshed.',
+      );
+    } catch (error) {
+      notification.error('Unable to Record Decision', getApiErrorMessage(error, 'The administrative decision could not be saved. Please try again.'));
+    }
   };
 
   const provinceApps = applications.filter(a =>
     !user?.province || a.applicant_province === user?.province
   );
+  const chartData = analytics?.monthly_trends?.map(item => ({
+    month: item.name,
+    apps: item.applications,
+    approved: 0,
+    rejected: 0,
+    fraud: 0,
+  })) || LINE_DATA;
 
   return (
     <DashboardLayout role="admin" userName={user?.full_name || 'Admin'}>
@@ -174,10 +215,10 @@ export default function AdminDashboard() {
           {/* Macro stats */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {[
-              { icon:FileText,    label:'Total Applications', value:'1,134', sub:'+12% this month', color:'text-cyan-400',   bg:'bg-cyan-400/10' },
-              { icon:CheckCircle, label:'Approved',           value:'978',   sub:'86.2% approval rate', color:'text-green-400', bg:'bg-green-400/10' },
-              { icon:XCircle,     label:'Rejected',           value:'121',   sub:'10.6% of total', color:'text-red-400',   bg:'bg-red-400/10' },
-              { icon:AlertTriangle,label:'Fraud Detected',   value:'35',    sub:'AI blocked 3 today', color:'text-orange-400',bg:'bg-orange-400/10' },
+              { icon:FileText,    label:'Total Applications', value:analytics?.total_applications ?? provinceApps.length, sub:'Live backend count', color:'text-cyan-400',   bg:'bg-cyan-400/10' },
+              { icon:CheckCircle, label:'Completed',          value:analytics?.completed_applications ?? 0, sub:'Issued certificates', color:'text-green-400', bg:'bg-green-400/10' },
+              { icon:XCircle,     label:'Rejected',           value:analytics?.rejected_applications ?? 0, sub:'Authority decisions', color:'text-red-400',   bg:'bg-red-400/10' },
+              { icon:AlertTriangle,label:'Pending',           value:analytics?.pending_applications ?? 0, sub:'Awaiting workflow action', color:'text-orange-400',bg:'bg-orange-400/10' },
             ].map((s,i) => (
               <div key={i} className="glass-card p-5">
                 <div className={`w-11 h-11 rounded-xl ${s.bg} flex items-center justify-center mb-3`}>
@@ -193,10 +234,10 @@ export default function AdminDashboard() {
           {/* Secondary stats */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {[
-              { icon:Users,    label:'Registered Citizens', value:'24,871', color:'text-blue-400' },
-              { icon:Shield,   label:'Police Staff',        value:'142',    color:'text-indigo-400' },
-              { icon:Activity, label:'AI Verifications',    value:'2,341',  color:'text-cyan-400' },
-              { icon:Database, label:'Certificates Issued', value:'891',    color:'text-purple-400' },
+              { icon:Users,    label:'Applications',        value:analytics?.total_applications ?? provinceApps.length, color:'text-blue-400' },
+              { icon:Shield,   label:'Success Rate',        value:analytics ? `${analytics.success_rate}%` : '—', color:'text-indigo-400' },
+              { icon:Activity, label:'Revenue',             value:analytics ? `PKR ${analytics.total_revenue}` : '—', color:'text-cyan-400' },
+              { icon:Database, label:'Completed',           value:analytics?.completed_applications ?? 0, color:'text-purple-400' },
             ].map((s,i) => (
               <div key={i} className="glass-card p-4 flex items-center gap-4">
                 <s.icon size={22} className={s.color}/>
@@ -242,7 +283,7 @@ export default function AdminDashboard() {
           <div className="glass-card p-6">
             <h2 className="text-white font-semibold mb-5 flex items-center gap-2"><TrendingUp size={16} className="text-cyan-400"/>Monthly Application Trends</h2>
             <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={LINE_DATA}>
+              <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)"/>
                 <XAxis dataKey="month" tick={{ fill:'rgba(255,255,255,0.4)', fontSize:12 }} axisLine={false} tickLine={false}/>
                 <YAxis tick={{ fill:'rgba(255,255,255,0.4)', fontSize:12 }} axisLine={false} tickLine={false}/>
@@ -285,7 +326,7 @@ export default function AdminDashboard() {
             <div className="glass-card p-6">
               <h2 className="text-white font-semibold mb-5 flex items-center gap-2"><Activity size={16} className="text-cyan-400"/>Monthly Volume</h2>
               <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={LINE_DATA} barSize={18}>
+                <BarChart data={chartData} barSize={18}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)"/>
                   <XAxis dataKey="month" tick={{ fill:'rgba(255,255,255,0.4)', fontSize:12 }} axisLine={false} tickLine={false}/>
                   <YAxis tick={{ fill:'rgba(255,255,255,0.4)', fontSize:12 }} axisLine={false} tickLine={false}/>

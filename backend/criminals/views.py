@@ -94,6 +94,27 @@ class CriminalRecordSearchView(APIView):
 
         return Response({'error': 'Please provide cnic, name, or face_image.'}, status=status.HTTP_400_BAD_REQUEST)
 
+
+class CriminalCheckApplicationView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, application_pk):
+        if request.user.role not in ['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']:
+            return Response({'error': 'Unauthorized access'}, status=status.HTTP_403_FORBIDDEN)
+        from applications.models import Application
+        from .service import perform_criminal_check
+        try:
+            application = Application.objects.get(pk=application_pk)
+        except Application.DoesNotExist:
+            return Response({'error': 'Application not found.'}, status=status.HTTP_404_NOT_FOUND)
+        result = perform_criminal_check(application)
+        return Response({
+            'result': result.result,
+            'summary': result.report_summary,
+            'checked_at': result.checked_at,
+            'matched_record_id': result.matched_record_id,
+        })
+
 class CriminalRecordAdminView(generics.ListCreateAPIView):
     queryset = CriminalRecord.objects.all()
     serializer_class = CriminalRecordSerializer

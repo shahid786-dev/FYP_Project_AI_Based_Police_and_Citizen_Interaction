@@ -1,9 +1,6 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Shield, Cpu, FileCheck, Search, Users, Lock,
-  ChevronRight, Star, CheckCircle, ArrowRight,
-  Globe, Zap, Eye, AlertTriangle, Award, Phone, Ambulance, HeartHandshake, FileText, QrCode, Bot
+  Shield, Search, ChevronRight, ArrowRight, AlertTriangle, Ambulance, HeartHandshake, FileText, QrCode, Bot
 } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';

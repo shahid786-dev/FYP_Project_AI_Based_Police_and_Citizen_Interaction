@@ -1,24 +1,14 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { incidentsAPI } from '../api/apiClient';
-import { AlertTriangle, MapPin, Phone, Send, CheckCircle2, ShieldAlert, Navigation, Loader2 } from 'lucide-react';
+import { AlertTriangle, MapPin, Phone, CheckCircle2, ShieldAlert, Navigation, Loader2 } from 'lucide-react';
 
 export default function EmergencySOSPage() {
-  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [successData, setSuccessData] = useState(null);
   const [error, setError] = useState('');
-
-  const [formData, setFormData] = useState({
-    emergency_type: 'CRIME_IN_PROGRESS',
-    contact_number: '',
-    location_address: '',
-    latitude: null,
-    longitude: null,
-    description: '',
-  });
 
   const categories = [
     { id: 'CRIME_IN_PROGRESS', label: 'Crime in Progress', desc: 'Active robbery, burglary or violent incident' },
@@ -30,12 +20,17 @@ export default function EmergencySOSPage() {
     { id: 'OTHER', label: 'Other Urgent Emergency', desc: 'Any other life-threatening situation' },
   ];
 
-  // Auto-fetch GPS on component mount
-  useEffect(() => {
-    fetchGPSLocation();
-  }, []);
+  const [formData, setFormData] = useState({
+    emergency_type: 'CRIME_IN_PROGRESS',
+    contact_number: '',
+    location_address: '',
+    latitude: null,
+    longitude: null,
+    description: '',
+  });
 
-  const fetchGPSLocation = () => {
+  // Auto-fetch GPS on component mount
+  function fetchGPSLocation() {
     if (!navigator.geolocation) {
       setError('Browser location service unavailable. Please enter address manually.');
       return;
@@ -57,7 +52,12 @@ export default function EmergencySOSPage() {
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
-  };
+  }
+
+  useEffect(() => {
+    const timer = setTimeout(fetchGPSLocation, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

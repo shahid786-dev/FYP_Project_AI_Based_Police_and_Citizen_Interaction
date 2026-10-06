@@ -6,10 +6,134 @@ from datetime import timedelta
 from django.utils import timezone
 from django.conf import settings
 from django.core.files.base import ContentFile
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import qrcode
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 from applications.models import Certificate
 from blockchain.service import BlockchainService
+
+
+# Template coordinates use pixels from the top-left of the 816x1306 artwork.
+CERTIFICATE_LAYOUT = {
+    'template_dpi': 100,
+    'font_name': 'Helvetica',
+    'font_bold_name': 'Helvetica-Bold',
+    'font_size': 11.5,
+    'minimum_font_size': 7.5,
+    'fields': {
+        'name': {'x': 330, 'baseline_y': 393, 'max_width': 440},
+        'father_name': {'x': 136, 'baseline_y': 443, 'max_width': 633},
+        'cnic': {'x': 219, 'baseline_y': 493, 'max_width': 309},
+        'district': {'x': 233, 'baseline_y': 542, 'max_width': 198},
+        'province': {'x': 592, 'baseline_y': 542, 'max_width': 177},
+        'certificate_no': {
+            'x': 215, 'baseline_y': 810, 'max_width': 194, 'align': 'center',
+        },
+        'issue_date': {
+            'x': 215, 'baseline_y': 860, 'max_width': 194, 'align': 'center',
+        },
+        'valid_until': {
+            'x': 215, 'baseline_y': 910, 'max_width': 194, 'align': 'center',
+        },
+        'status': {
+            'x': 261, 'baseline_y': 958, 'max_width': 149,
+            'align': 'center', 'bold': True,
+        },
+    },
+    'qr': {
+        'frame': {'x': 33, 'y': 1028, 'size': 183},
+        'x': 43,
+        'y': 1038,
+        'size': 163,
+        'quiet_zone_modules': 4,
+        'label': {'center_x': 124.5, 'baseline_y': 1250},
+    },
+}
+
+
+def draw_fitted_text(pdf, value, field, page_height, scale, bold=False):
+    """Draw one value at a fixed baseline, shrinking it to stay in its field."""
+    text = str(value or '')
+    if not text:
+        return
+
+    font_name = CERTIFICATE_LAYOUT['font_bold_name'] if bold else CERTIFICATE_LAYOUT['font_name']
+    font_size = CERTIFICATE_LAYOUT['font_size']
+    max_width = field['max_width'] * scale
+    while (
+        font_size > CERTIFICATE_LAYOUT['minimum_font_size']
+        and pdf.stringWidth(text, font_name, font_size) > max_width
+    ):
+        font_size = round(font_size - 0.25, 2)
+
+    if pdf.stringWidth(text, font_name, font_size) > max_width:
+        while text and pdf.stringWidth(f'{text}...', font_name, font_size) > max_width:
+            text = text[:-1]
+        text = f'{text}...' if text else ''
+    if not text:
+        return
+
+    x = field['x'] * scale
+    if field.get('align') == 'center':
+        x += (max_width - pdf.stringWidth(text, font_name, font_size)) / 2
+    y = page_height - field['baseline_y'] * scale
+    pdf.setFont(font_name, font_size)
+    pdf.setFillColorRGB(0.0, 0.0, 0.0)
+    if bold:
+        pdf.setFillColorRGB(0.13, 0.55, 0.13)
+    pdf.drawString(x, y, text)
+
+
+def _generate_verification_qr_png(verification_url):
+    qr_layout = CERTIFICATE_LAYOUT['qr']
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=qr_layout['quiet_zone_modules'],
+    )
+    qr.add_data(verification_url)
+    qr.make(fit=True)
+    qr_image = qr.make_image(fill_color='black', back_color='white').get_image().convert('RGB')
+    qr_buffer = io.BytesIO()
+    qr_image.save(qr_buffer, format='PNG')
+    return qr_buffer.getvalue()
+
+
+def render_certificate_pdf(template_path, values, verification_url):
+    """Compose dynamic values and a QR over the original fixed-size template."""
+    with Image.open(template_path) as template:
+        template_width, template_height = template.size
+
+    scale = 72.0 / CERTIFICATE_LAYOUT['template_dpi']
+    page_width = template_width * scale
+    page_height = template_height * scale
+    output = io.BytesIO()
+    pdf = canvas.Canvas(output, pagesize=(page_width, page_height))
+    pdf.drawImage(
+        template_path, 0, 0, width=page_width, height=page_height,
+        preserveAspectRatio=False,
+    )
+
+    for key, field in CERTIFICATE_LAYOUT['fields'].items():
+        draw_fitted_text(
+            pdf, values.get(key), field, page_height, scale,
+            bold=field.get('bold', False),
+        )
+
+    qr_layout = CERTIFICATE_LAYOUT['qr']
+    qr_buffer = io.BytesIO(_generate_verification_qr_png(verification_url))
+    qr_size = qr_layout['size'] * scale
+    qr_x = qr_layout['x'] * scale
+    qr_y = page_height - (qr_layout['y'] + qr_layout['size']) * scale
+    pdf.drawImage(
+        ImageReader(qr_buffer), qr_x, qr_y, width=qr_size, height=qr_size,
+        preserveAspectRatio=True, mask='auto',
+    )
+    pdf.showPage()
+    pdf.save()
+    return output.getvalue()
 
 # ── Province → Police Authority mapping ──────────────────────────────────────
 PROVINCE_AUTHORITY_MAP = {
@@ -115,7 +239,7 @@ class CertificateService:
         )
         # Strip trailing slash for clean URL
         base_url = base_url.rstrip('/')
-        verification_url = f"{base_url}/verify/certificate/{cert.certificate_number}"
+        verification_url = f"{base_url}/verify/{cert.certificate_number}"
         cert.verification_url = verification_url
         cert.save()
 
@@ -135,61 +259,21 @@ class CertificateService:
                 f"  {os.path.join(settings.BASE_DIR.parent, 'certificates', 'templates', 'Certificate_Template.jfif')}\n"
                 f"  {os.path.join(settings.BASE_DIR.parent, 'src', 'assets', 'Police verification Certificate.png')}"
             )
-
-        img = Image.open(template_path).convert('RGB')
-        draw = ImageDraw.Draw(img)
-
-        # ── Load font ─────────────────────────────────────────────────────────
-        try:
-            font_path = os.path.join(settings.BASE_DIR, 'assets', 'fonts', 'Roboto-Regular.ttf')
-            font      = ImageFont.truetype(font_path, 22)
-            font_bold = ImageFont.truetype(font_path, 24)
-        except (IOError, OSError):
-            font      = ImageFont.load_default()
-            font_bold = font
-
-        # ── Coordinates (verified against 816×1306 template) ─────────────────
-        coords = getattr(settings, 'CERTIFICATE_COORDINATES', {
-            'NAME':        (330, 388),
-            'FATHER_NAME': (130, 435),
-            'CNIC':        (220, 482),
-            'DISTRICT':    (240, 530),
-            'PROVINCE':    (605, 530),
-            'CERT_NUM':    (215, 808),
-            'ISSUE_DATE':  (185, 855),
-            'EXPIRY_DATE': (185, 903),
-            'STATUS':      (265, 952),
-            'QR_CODE':     (30,  1040),
-            'QR_SIZE':     175,
-        })
-
-        color       = (0, 0, 0)        # black text
-        green_color = (34, 139, 34)    # green for status
-
-        # ── Draw fields from database — NO hardcoded citizen values ───────────
-        draw.text(coords['NAME'],        citizen.full_name,                   fill=color, font=font_bold)
-        draw.text(coords['FATHER_NAME'], citizen.father_name or '',           fill=color, font=font)
-        draw.text(coords['CNIC'],        citizen.cnic,                        fill=color, font=font)
-        draw.text(coords['DISTRICT'],    district,                            fill=color, font=font)
-        draw.text(coords['PROVINCE'],    province,                            fill=color, font=font)
-        draw.text(coords['CERT_NUM'],    cert.certificate_number,             fill=color, font=font)
-        draw.text(coords['ISSUE_DATE'],  str(cert.issue_date),                fill=color, font=font)
-        draw.text(coords['EXPIRY_DATE'], str(cert.validity_expiry),           fill=color, font=font)
-        draw.text(coords['STATUS'],      'VERIFIED — CLEAR',                  fill=green_color, font=font_bold)
-
-        # ── Generate QR code embedding the verification URL ───────────────────
-        qr = qrcode.QRCode(version=1, box_size=4, border=1)
-        qr.add_data(verification_url)
-        qr.make(fit=True)
-        qr_img  = qr.make_image(fill_color='black', back_color='white')
-        qr_size = coords.get('QR_SIZE', 175)
-        qr_img  = qr_img.resize((qr_size, qr_size))
-        img.paste(qr_img, coords['QR_CODE'])
-
-        # ── Save the final certificate as PDF ─────────────────────────────────
-        buf       = io.BytesIO()
-        img.save(buf, format='PDF', resolution=100.0, save_all=True)
-        pdf_bytes = buf.getvalue()
+        pdf_bytes = render_certificate_pdf(
+            template_path,
+            {
+                'name': citizen.full_name,
+                'father_name': citizen.father_name,
+                'cnic': citizen.cnic,
+                'district': district,
+                'province': province,
+                'certificate_no': cert.certificate_number,
+                'issue_date': cert.issue_date,
+                'valid_until': cert.validity_expiry,
+                'status': 'VERIFIED',
+            },
+            verification_url,
+        )
 
         # ── SHA-256 hash ───────────────────────────────────────────────────────
         cert_hash            = hashlib.sha256(pdf_bytes).hexdigest()

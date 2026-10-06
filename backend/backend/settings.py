@@ -10,6 +10,10 @@ SECRET_KEY = os.environ.get(
 )
 
 DEBUG = os.environ.get('DJANGO_DEBUG', 'false').lower() == 'true'
+LOCAL_DEVELOPMENT = os.environ.get('DJANGO_ENV', 'local').lower() != 'production'
+OTP_DEV_BYPASS_ENABLED = (
+    os.environ.get('OTP_DEV_BYPASS', str(LOCAL_DEVELOPMENT)).lower() == 'true'
+)
 
 ALLOWED_HOSTS = [
     host for host in os.environ.get(
@@ -212,28 +216,6 @@ LOGGING = {
 
 # ── Certificate Generation Settings ──────────────────────────────────────
 CERTIFICATE_VALIDITY_DAYS = 180
-
-# Coordinates verified against certificates/templates/Certificate_Template.jfif (816×1306 px)
-# Format: (x, y) where (0,0) is top-left
-CERTIFICATE_COORDINATES = {
-    # Row 1: "This is to certify that Mr./Ms. ___"
-    'NAME':        (330, 388),
-    # Row 2: "S/O / D/O ___"
-    'FATHER_NAME': (130, 435),
-    # Row 3: "bearing CNIC No. ___"
-    'CNIC':        (220, 482),
-    # Row 4: "residing at District: ___ and Province: ___"
-    'DISTRICT':    (240, 530),
-    'PROVINCE':    (605, 530),
-    # Certificate details block
-    'CERT_NUM':    (215, 808),
-    'ISSUE_DATE':  (185, 855),
-    'EXPIRY_DATE': (185, 903),
-    'STATUS':      (265, 952),
-    # QR Code placeholder bottom-left (30,1040 → 175×175 px box)
-    'QR_CODE':     (30, 1040),
-    'QR_SIZE':     175,
-}
 
 # Base URL used in QR code verification links.
 # Set CERTIFICATE_VERIFY_BASE_URL in the OS environment for production deployments.

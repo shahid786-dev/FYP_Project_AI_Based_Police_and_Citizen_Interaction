@@ -17,11 +17,9 @@ const NAV_LINKS = [
       { to: '/report-crime', label: 'Report Crime', desc: 'File snatching / FIR complaints' },
       { to: '/women-safety', label: 'Women Safety', desc: 'Confidential safety reporting' },
       { to: '/accident-assistance', label: 'Accident Help', desc: 'Road accident & medical aid' },
-      { to: '/criminal-records', label: 'Criminal Records', desc: 'Search criminal database' },
     ],
   },
   { to: '/track', label: 'Track Status' },
-  { to: '/blockchain', label: 'Blockchain Ledger' },
 ];
 
 // Pakistan Police Badge SVG Logo
@@ -59,7 +57,13 @@ export default function Navbar() {
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
-  useEffect(() => { setOpen(false); setActiveDropdown(null); }, [location]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setOpen(false);
+      setActiveDropdown(null);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [location]);
 
   const getDashboardPath = () => {
     if (role === 'POLICE_AUTHORITY') return '/authority/dashboard';

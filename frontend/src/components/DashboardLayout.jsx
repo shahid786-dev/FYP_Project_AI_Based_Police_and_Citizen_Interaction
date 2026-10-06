@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 import {
   Shield, Home, FileText, Search, CreditCard, Award,
-  Bell, LogOut, Menu, X, User, ChevronRight, Settings,
+  Bell, LogOut, Menu, X, ChevronRight, Settings,
   Database, BarChart2, Users, Clock
 } from 'lucide-react';
 import { logout } from '../store/authSlice';
@@ -15,7 +15,6 @@ const citizenNav = [
   { icon: CreditCard,label: 'Payments',     to: '/citizen/payment' },
   { icon: Award,     label: 'Certificates', to: '/citizen/certificate' },
   { icon: Bell,      label: 'Notifications',to: '/citizen/notifications' },
-  { icon: Database,  label: 'Blockchain',   to: '/blockchain' },
 ];
 
 const staffNav = [
@@ -66,7 +65,10 @@ export default function DashboardLayout({ children, role = 'citizen', userName =
 
   const handleLogout = () => {
     dispatch(logout());
-    navigate('/login');
+    const loginPath = role === 'staff' ? '/login/staff'
+      : role === 'authority' || role === 'admin' || role === 'police' ? '/login/admin'
+      : '/login';
+    navigate(loginPath, { replace: true });
   };
 
   return (

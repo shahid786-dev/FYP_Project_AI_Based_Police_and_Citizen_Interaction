@@ -5,6 +5,7 @@ import { Upload, FileText, MapPin, ChevronRight, CheckCircle, X, Shield, AlertCi
 import DashboardLayout from '../components/DashboardLayout';
 import { applicationAPI } from '../api/apiClient';
 import { addApplication, setCurrentApplication } from '../store/applicationSlice';
+import { useNotification, getApiErrorMessage } from '../components/notificationContext';
 
 const SERVICE_TYPES = [
   'Character Certificate','Tenant Verification','Employee Verification',
@@ -48,6 +49,7 @@ function FileUploadBox({ label, accept, required, onFile }) {
 export default function VerificationRequestPage() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
+  const notification = useNotification();
   const { user } = useSelector(s => s.auth);
   const [form, setForm] = useState({ type:'', purpose:'', address:'', station:'' });
   const [docs, setDocs] = useState({ CNIC_FRONT:null, CNIC_BACK:null, PASSPORT_PHOTO:null, SUPPORTING:null });
@@ -59,6 +61,7 @@ export default function VerificationRequestPage() {
     e.preventDefault();
     setError('');
     setLoading(true);
+    let createdApplication = false;
     try {
       const appRes = await applicationAPI.create({
         application_type: form.type,
@@ -67,6 +70,7 @@ export default function VerificationRequestPage() {
         nearest_station: form.station,
       });
       const app = appRes.data;
+      createdApplication = true;
       dispatch(addApplication(app));
       dispatch(setCurrentApplication(app));
       // Upload documents in sequence
@@ -78,9 +82,21 @@ export default function VerificationRequestPage() {
           await applicationAPI.uploadDoc(app.id, fd);
         }
       }
-      navigate('/citizen/face-verify', { state: { applicationId: app.id } });
+      notification.success(
+        'Application Submitted Successfully',
+        'Your application has been submitted. Continue with face verification to proceed.',
+      );
+      navigate('/citizen/dashboard');
     } catch (err) {
-      setError(err.response?.data?.error || 'Submission failed. Please try again.');
+      if (createdApplication) {
+        const message = 'Your application was created, but one or more documents could not be uploaded. Do not submit another application; contact support for assistance.';
+        setError(message);
+        notification.error('Document Upload Incomplete', message);
+        return;
+      }
+      const message = getApiErrorMessage(err, 'Something went wrong while submitting your application. Please try again.');
+      setError(message);
+      notification.error('Unable to Submit Application', message);
     } finally { setLoading(false); }
   };
 

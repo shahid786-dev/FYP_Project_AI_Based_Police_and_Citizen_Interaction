@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { incidentsAPI } from '../api/apiClient';
-import { Shield, Ambulance, Heart, CheckCircle2, AlertTriangle, Upload, UserCheck, Loader2 } from 'lucide-react';
+import { Ambulance, Heart, CheckCircle2, AlertTriangle, Upload, Loader2 } from 'lucide-react';
 
 export default function AccidentAssistancePage() {
   const [loading, setLoading] = useState(false);

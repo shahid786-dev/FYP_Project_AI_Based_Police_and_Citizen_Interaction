@@ -43,14 +43,18 @@ export default function NotificationsPage() {
     try {
       await notificationsAPI.markRead(id);
       setNotifs(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
-    } catch {}
+    } catch (err) {
+      console.error('Unable to mark notification as read:', err);
+    }
   };
 
   const markAllRead = async () => {
     try {
       await notificationsAPI.markAllRead();
       setNotifs(prev => prev.map(n => ({ ...n, is_read: true })));
-    } catch {}
+    } catch (err) {
+      console.error('Unable to mark all notifications as read:', err);
+    }
   };
 
   const unreadCount = notifs.filter(n => !n.is_read).length;
