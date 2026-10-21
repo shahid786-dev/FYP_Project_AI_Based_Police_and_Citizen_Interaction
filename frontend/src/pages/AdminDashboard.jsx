@@ -9,6 +9,7 @@ import {
 import DashboardLayout from '../components/DashboardLayout';
 import { authorityAPI, applicationAPI, policeAPI } from '../api/apiClient';
 import { useNotification, getApiErrorMessage } from '../components/notificationContext';
+import DocumentReview from '../components/DocumentReview';
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
@@ -43,7 +44,7 @@ export default function AdminDashboard() {
   const [analytics, setAnalytics] = useState(null);
   const [loadingStaff, setLoadingStaff] = useState(false);
   const [showAddStaff, setShowAddStaff] = useState(false);
-  const [newStaff, setNewStaff] = useState({ full_name: '', email: '', cnic: '', password: 'Staff@1234' });
+  const [newStaff, setNewStaff] = useState({ full_name: '', email: '', cnic: '', password: '' });
   const [staffError, setStaffError] = useState('');
   const [savingStaff, setSavingStaff] = useState(false);
 
@@ -95,7 +96,7 @@ export default function AdminDashboard() {
     try {
       await authorityAPI.createStaff({ ...newStaff, role: 'POLICE_STAFF' });
       setShowAddStaff(false);
-      setNewStaff({ full_name: '', email: '', cnic: '', password: 'Staff@1234' });
+      setNewStaff({ full_name: '', email: '', cnic: '', password: '' });
       const refreshed = await fetchStaff();
       notification.success(
         'Staff Account Created',
@@ -358,35 +359,46 @@ export default function AdminDashboard() {
           ) : (
             <div className="space-y-2">
               {provinceApps.map(app => (
-                <div key={app.id} className="p-4 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between gap-3 text-xs">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-mono text-amber-400">{app.tracking_id}</span>
-                      <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] font-bold uppercase">{app.status}</span>
-                    </div>
-                    <p className="text-white font-semibold">{app.application_type}</p>
-                    <p className="text-slate-500 mt-0.5">{app.applicant?.full_name} · CNIC: <span className="font-mono">{app.applicant?.cnic}</span></p>
-                    {app.applicant_province && (
-                      <p className="text-cyan-400/70 text-[10px] mt-0.5 flex items-center gap-1"><MapPin size={9} />{app.applicant_province}</p>
-                    )}
-                  </div>
-                  <div className="text-right flex items-center gap-4 flex-shrink-0">
-                    <div className="text-slate-500 text-[10px] text-right">
-                      <p>{new Date(app.submitted_at).toLocaleDateString('en-PK')}</p>
-                    </div>
-                    {app.status === 'FORWARDED_TO_ADMIN' && (
-                      <div className="flex gap-2">
-                        <button onClick={() => handleDecision(app.id, 'APPROVE')}
-                          className="px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 hover:bg-green-600/40 font-bold border border-green-500/30 transition">
-                          Approve
-                        </button>
-                        <button onClick={() => handleDecision(app.id, 'REJECT')}
-                          className="px-3 py-1.5 rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/40 font-bold border border-red-500/30 transition">
-                          Reject
-                        </button>
+                <div key={app.id} className="p-4 bg-slate-950 rounded-2xl border border-slate-800 text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-mono text-amber-400">{app.tracking_id}</span>
+                        <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] font-bold uppercase">{app.status}</span>
                       </div>
-                    )}
+                      <p className="text-white font-semibold">{app.application_type}</p>
+                      <p className="text-slate-500 mt-0.5">{app.applicant?.full_name} · CNIC: <span className="font-mono">{app.applicant?.cnic}</span></p>
+                      {app.applicant_province && (
+                        <p className="text-cyan-400/70 text-[10px] mt-0.5 flex items-center gap-1"><MapPin size={9} />{app.applicant_province}</p>
+                      )}
+                    </div>
+                    <div className="text-right flex items-center gap-4 flex-shrink-0">
+                      <div className="text-slate-500 text-[10px] text-right">
+                        <p>{new Date(app.submitted_at).toLocaleDateString('en-PK')}</p>
+                      </div>
+                      {app.status === 'FORWARDED_TO_ADMIN' && (
+                        <div className="flex gap-2">
+                          <button onClick={() => handleDecision(app.id, 'APPROVE')}
+                            className="px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 hover:bg-green-600/40 font-bold border border-green-500/30 transition">
+                            Approve
+                          </button>
+                          <button onClick={() => handleDecision(app.id, 'REJECT')}
+                            className="px-3 py-1.5 rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/40 font-bold border border-red-500/30 transition">
+                            Reject
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
+                  <details className="mt-3 border-t border-slate-800 pt-3">
+                    <summary className="cursor-pointer text-cyan-400 hover:text-cyan-300">View application documents</summary>
+                    <div className="mt-3">
+                      <DocumentReview
+                        documents={app.documents || []}
+                        requiredTypes={['CNIC_FRONT', 'CNIC_BACK']}
+                      />
+                    </div>
+                  </details>
                 </div>
               ))}
             </div>
@@ -432,7 +444,7 @@ export default function AdminDashboard() {
                 </div>
                 <div>
                   <label className="label-text">Password</label>
-                  <input className="input-field" placeholder="Default: Staff@1234"
+                  <input type="password" required className="input-field" placeholder="Set an initial password"
                     value={newStaff.password} onChange={e => setNewStaff(s => ({ ...s, password: e.target.value }))} />
                 </div>
               </div>

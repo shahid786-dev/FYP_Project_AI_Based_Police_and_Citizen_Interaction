@@ -3,13 +3,14 @@ import { Link } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import {
   FileText, Clock, CheckCircle, AlertCircle, PlusCircle, Download,
-  User as UserIcon, AlertTriangle, Ambulance, HeartHandshake, Shield,
+  User as UserIcon, Shield,
   ChevronRight, CreditCard, Award, Fingerprint
 } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
-import { applicationAPI, incidentsAPI, getStoredAuth } from '../api/apiClient';
+import { applicationAPI, getStoredAuth } from '../api/apiClient';
 import { useNotification, getApiErrorMessage } from '../components/notificationContext';
 import { setApplications } from '../store/applicationSlice';
+import DocumentReview from '../components/DocumentReview';
 
 const STATUS_CONFIG = {
   PENDING:            { color: 'text-yellow-400', bg: 'bg-yellow-950/50 border-yellow-500/30', label: 'Pending Review' },
@@ -43,13 +44,24 @@ function getWorkflowStep(status) {
   return 0;
 }
 
+function getIdentityValue(...values) {
+  const placeholders = new Set(['n/a', 'na', 'none', 'unknown', 'not available', 'not provided']);
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    const normalized = text.toLowerCase();
+    if (!text || placeholders.has(normalized) || /^citizen\s*\(.+\)$/i.test(text)) continue;
+    return text;
+  }
+  return 'Not provided';
+}
+
 export default function CitizenDashboard() {
   const dispatch = useDispatch();
   const { user } = useSelector(s => s.auth);
   const { applications } = useSelector(s => s.application);
   const notification = useNotification();
 
-  const [complaints, setComplaints] = useState([]);
   const [loading, setLoading] = useState(true);
   const [photoPreview] = useState(() => {
     return getStoredAuth()?.user?.photo_url || null;
@@ -57,19 +69,10 @@ export default function CitizenDashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.allSettled([applicationAPI.list(), incidentsAPI.listComplaints()])
-      .then(([appResult, complaintResult]) => {
+    applicationAPI.list()
+      .then((appResult) => {
         if (cancelled) return;
-        if (appResult.status === 'fulfilled') {
-          dispatch(setApplications(appResult.value.data || []));
-        } else {
-          notification.error('Unable to Load Applications', getApiErrorMessage(appResult.reason, 'Your applications could not be loaded. Please try again.'));
-        }
-        if (complaintResult.status === 'fulfilled') {
-          setComplaints(complaintResult.value.data || []);
-        } else {
-          notification.error('Unable to Load Complaints', getApiErrorMessage(complaintResult.reason, 'Your complaints could not be loaded. Please try again.'));
-        }
+        dispatch(setApplications(appResult.data || []));
         setLoading(false);
       })
       .catch(error => {
@@ -100,13 +103,19 @@ export default function CitizenDashboard() {
 
   // Latest application for workflow display
   const latestApp = applications[0] || null;
+  const identity = latestApp?.nadra_details || {};
+  const district = getIdentityValue(identity.district, latestApp?.applicant?.district);
+  const province = getIdentityValue(
+    identity.province,
+    latestApp?.applicant?.province,
+    latestApp?.applicant_province,
+  );
   const workflowStep = latestApp ? getWorkflowStep(latestApp.status) : -1;
 
   const stats = [
     { label: 'Total Applications', value: applications.length, icon: FileText, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
     { label: 'Under Review', value: applications.filter(a => ['CRIMINAL_CHECKED', 'STAFF_REVIEWED'].includes(a.status)).length, icon: Clock, color: 'text-yellow-400', bg: 'bg-yellow-500/10' },
     { label: 'Completed', value: applications.filter(a => a.status === 'COMPLETED').length, icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/10' },
-    { label: 'Complaints Filed', value: complaints.length, icon: AlertCircle, color: 'text-purple-400', bg: 'bg-purple-500/10' },
   ];
 
   return (
@@ -135,10 +144,6 @@ export default function CitizenDashboard() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Link to="/emergency-sos"
-            className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-red-950/50 animate-pulse">
-            <AlertTriangle size={16} /> Emergency SOS
-          </Link>
           <Link to="/citizen/request"
             className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-md">
             <PlusCircle size={16} /> New Application
@@ -162,35 +167,48 @@ export default function CitizenDashboard() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
             <div>
               <p className="text-slate-400 text-[10px] uppercase font-semibold">Name (on Identity Card)</p>
-              <p className="text-white font-bold text-sm mt-0.5">{latestApp.nadra_details.full_name}</p>
+              <p className="text-white font-bold text-sm mt-0.5">{getIdentityValue(identity.full_name, latestApp.applicant?.full_name)}</p>
             </div>
             <div>
               <p className="text-slate-400 text-[10px] uppercase font-semibold">CNIC Number</p>
-              <p className="font-mono text-cyan-400 font-bold text-sm mt-0.5">{latestApp.nadra_details.cnic}</p>
+              <p className="font-mono text-cyan-400 font-bold text-sm mt-0.5">{getIdentityValue(identity.cnic, latestApp.applicant?.cnic)}</p>
             </div>
             <div>
               <p className="text-slate-400 text-[10px] uppercase font-semibold">Father / Husband Name</p>
-              <p className="text-slate-200 font-medium text-sm mt-0.5">{latestApp.nadra_details.father_name}</p>
+              <p className="text-slate-200 font-medium text-sm mt-0.5">{getIdentityValue(identity.father_name, latestApp.applicant?.father_name)}</p>
             </div>
             <div>
               <p className="text-slate-400 text-[10px] uppercase font-semibold">Date of Birth</p>
-              <p className="text-slate-200 font-medium text-sm mt-0.5">{latestApp.nadra_details.date_of_birth}</p>
+              <p className="text-slate-200 font-medium text-sm mt-0.5">{getIdentityValue(identity.date_of_birth, latestApp.applicant?.dob)}</p>
             </div>
             <div>
               <p className="text-slate-400 text-[10px] uppercase font-semibold">Gender</p>
-              <p className="text-slate-200 font-medium text-sm mt-0.5">{latestApp.nadra_details.gender}</p>
+              <p className="text-slate-200 font-medium text-sm mt-0.5">{getIdentityValue(identity.gender, latestApp.applicant?.gender)}</p>
             </div>
             <div>
               <p className="text-slate-400 text-[10px] uppercase font-semibold">District & Province</p>
-              <p className="text-slate-200 font-medium text-sm mt-0.5">{latestApp.nadra_details.district}, {latestApp.nadra_details.province}</p>
+              <p className="text-slate-200 font-medium text-sm mt-0.5">
+                {[district, province].filter(value => value !== 'Not provided').join(', ') || 'Not provided'}
+              </p>
             </div>
             <div className="col-span-2 md:col-span-2">
               <p className="text-slate-400 text-[10px] uppercase font-semibold">Permanent Address</p>
-              <p className="text-slate-200 font-medium text-sm mt-0.5">{latestApp.nadra_details.address}</p>
+              <p className="text-slate-200 font-medium text-sm mt-0.5">
+                {getIdentityValue(identity.permanent_address, identity.address, latestApp.applicant?.address)}
+              </p>
             </div>
           </div>
         </div>
       )}
+
+      <div className="mb-6">
+        <DocumentReview
+          documents={latestApp?.documents || []}
+          onlyTypes={['CNIC_FRONT']}
+          requiredTypes={['CNIC_FRONT']}
+          title="My CNIC Image"
+        />
+      </div>
 
       {/* Stats Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
@@ -323,34 +341,13 @@ export default function CitizenDashboard() {
       )}
 
       {/* Quick Action Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
         <Link to="/citizen/request" className="p-4 bg-slate-900 border border-slate-800 hover:border-cyan-500/40 rounded-2xl flex flex-col items-center gap-2 text-center transition group">
           <div className="w-10 h-10 rounded-xl bg-cyan-500/10 group-hover:bg-cyan-500/20 text-cyan-400 flex items-center justify-center transition">
             <Shield size={20} />
           </div>
           <p className="text-white font-bold text-xs">Police Verification</p>
           <p className="text-slate-500 text-[10px]">Apply for clearance</p>
-        </Link>
-        <Link to="/report-crime" className="p-4 bg-slate-900 border border-slate-800 hover:border-blue-500/40 rounded-2xl flex flex-col items-center gap-2 text-center transition group">
-          <div className="w-10 h-10 rounded-xl bg-blue-500/10 group-hover:bg-blue-500/20 text-blue-400 flex items-center justify-center transition">
-            <FileText size={20} />
-          </div>
-          <p className="text-white font-bold text-xs">Report Crime</p>
-          <p className="text-slate-500 text-[10px]">File a complaint</p>
-        </Link>
-        <Link to="/women-safety" className="p-4 bg-slate-900 border border-slate-800 hover:border-pink-500/40 rounded-2xl flex flex-col items-center gap-2 text-center transition group">
-          <div className="w-10 h-10 rounded-xl bg-pink-500/10 group-hover:bg-pink-500/20 text-pink-400 flex items-center justify-center transition">
-            <HeartHandshake size={20} />
-          </div>
-          <p className="text-white font-bold text-xs">Women Safety</p>
-          <p className="text-slate-500 text-[10px]">Harassment desk</p>
-        </Link>
-        <Link to="/accident-assistance" className="p-4 bg-slate-900 border border-slate-800 hover:border-emerald-500/40 rounded-2xl flex flex-col items-center gap-2 text-center transition group">
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 group-hover:bg-emerald-500/20 text-emerald-400 flex items-center justify-center transition">
-            <Ambulance size={20} />
-          </div>
-          <p className="text-white font-bold text-xs">Accident Help</p>
-          <p className="text-slate-500 text-[10px]">Road emergency</p>
         </Link>
       </div>
 
@@ -415,27 +412,6 @@ export default function CitizenDashboard() {
         )}
       </div>
 
-      {/* Complaints */}
-      {complaints.length > 0 && (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
-          <h2 className="text-white font-bold text-base flex items-center gap-2 mb-4">
-            <FileText size={18} className="text-blue-400" /> My Complaints & Safety Reports
-          </h2>
-          <div className="space-y-2">
-            {complaints.map((c) => (
-              <div key={c.id} className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between gap-3 text-xs">
-                <div>
-                  <p className="text-white font-semibold">{c.title}</p>
-                  <p className="text-amber-400 font-mono text-[11px]">{c.complaint_id} · {c.category}</p>
-                </div>
-                <span className="px-2.5 py-0.5 rounded bg-amber-950 text-amber-300 font-bold uppercase text-[10px]">
-                  {c.status}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </DashboardLayout>
   );
 }

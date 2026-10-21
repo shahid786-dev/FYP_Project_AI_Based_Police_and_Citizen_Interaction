@@ -37,3 +37,4 @@ media/
 # Local datasets and generated certificate files
 data/id-card/images/
 certificates/generated/
+admin_credentials.md

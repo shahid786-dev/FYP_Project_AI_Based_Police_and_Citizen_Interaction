@@ -3,6 +3,7 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from applications.views import ProtectedDocumentMediaView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -18,6 +19,11 @@ urlpatterns = [
     path('api/audit/', include('audit.urls')),
     path('api/face-verify/', include('face_verification.urls')),
     path('api/incidents/', include('incidents.urls')),
+    path(
+        'media/application_docs/<path:filename>',
+        ProtectedDocumentMediaView.as_view(),
+        name='protected-application-document-media',
+    ),
     
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

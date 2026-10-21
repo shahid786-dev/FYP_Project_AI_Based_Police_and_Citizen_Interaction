@@ -1,55 +1,72 @@
 import { useState, useEffect, useRef } from 'react';
 import { MessageCircle, X, Send, ChevronDown } from 'lucide-react';
 import { Shield } from 'lucide-react';
+import { useSelector } from 'react-redux';
 import { chatbotAPI } from '../api/apiClient';
 
-const initialMessages = [
-  { from: 'ai', text: 'السلام علیکم! 👋 I am your AI Assistant for PakVerify. How can I help you today?' },
-  { from: 'ai', text: 'Ask me about applications, documents, payments, or tracking your request!' },
-];
-
-const QUICK = [
-  'How to apply for character certificate?',
-  'What documents are required?',
-  'How can I track my application?',
-];
+const ROLE_DETAILS = {
+  CITIZEN: {
+    welcome: 'السلام علیکم! I can explain application steps, document uploads, payment information, and certificate verification. Sign in to retrieve your own application or certificate.',
+    quick: ['How do I apply?', 'What documents can I upload?', 'How can I track my application?'],
+  },
+  POLICE_STAFF: {
+    welcome: 'Welcome. I can help explain application workflows, retrieve permitted application and certificate details, and search the local criminal-record dataset.',
+    quick: ['How can I review an application?', 'How do criminal-record lookups work?', 'How do I verify a certificate?'],
+  },
+  POLICE_AUTHORITY: {
+    welcome: 'Welcome. I can help explain permitted application and certificate workflows and search the local criminal-record dataset.',
+    quick: ['How can I review an application?', 'How do criminal-record lookups work?', 'How do I verify a certificate?'],
+  },
+  SUPER_ADMIN: {
+    welcome: 'Welcome. I can help explain available workflows and retrieve application, certificate, or local criminal-record information within your authorized access.',
+    quick: ['How can I review an application?', 'How do criminal-record lookups work?', 'How do I verify a certificate?'],
+  },
+};
+const PUBLIC_DETAILS = {
+  welcome: 'السلام علیکم! I can explain application steps, document uploads, payment information, and certificate verification. Sign in to retrieve private records.',
+  quick: ['How do I apply?', 'What documents can I upload?', 'How can I track my application?'],
+};
 
 export default function AIChatbot() {
+  const { user, role, token, isAuthenticated } = useSelector((state) => state.auth);
+  const identity = isAuthenticated
+    ? `${role}:${user?.id || user?.cnic || user?.email || ''}:${token || ''}`
+    : 'anonymous';
+  const roleDetails = isAuthenticated ? ROLE_DETAILS[role] || PUBLIC_DETAILS : PUBLIC_DETAILS;
+  return <ChatbotPanel key={identity} roleDetails={roleDetails} />;
+}
+
+function ChatbotPanel({ roleDetails }) {
   const [open, setOpen]         = useState(false);
-  const [messages, setMessages] = useState(initialMessages);
+  const [messages, setMessages] = useState([{ from: 'ai', text: roleDetails.welcome }]);
   const [input, setInput]       = useState('');
   const [typing, setTyping]     = useState(false);
   const [pulse, setPulse]       = useState(true);
   const bottomRef               = useRef(null);
+  const requestSequence         = useRef(0);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, typing]);
   useEffect(() => { const t = setTimeout(() => setPulse(false), 6000); return () => clearTimeout(t); }, []);
 
   const sendMessage = async (text) => {
     const q = text || input.trim();
-    if (!q) return;
+    if (!q || typing) return;
+    const sequence = ++requestSequence.current;
     setMessages(prev => [...prev, { from: 'user', text: q }]);
     setInput('');
     setTyping(true);
     try {
       const res = await chatbotAPI.chat(q);
-      setMessages(prev => [...prev, { from: 'ai', text: res.data.reply }]);
-    } catch {
-      // Local FAQ fallback
-      const FAQ = [
-        { q: 'apply',    a: 'Login → New Request → choose certificate type → upload CNIC + photo → submit. Processing: 3-7 days.' },
-        { q: 'document', a: 'You need: CNIC Front & Back, Passport photo, Proof of address (utility bill).' },
-        { q: 'track',    a: 'Go to Track Application and enter your Tracking ID received via SMS/Email.' },
-        { q: 'payment',  a: 'We accept JazzCash, EasyPaisa, Credit/Debit Cards and Bank Transfer. Total: PKR 650.' },
-        { q: 'fee',      a: 'Total fee: PKR 650 (Application PKR 500 + AI Verification PKR 100 + Processing PKR 50).' },
-        { q: 'otp',      a: 'OTP is a 6-digit code sent to your mobile. Valid for 10 minutes. Use 123456 in demo mode.' },
-      ];
-      const lower = q.toLowerCase();
-      const match = FAQ.find(f => lower.includes(f.q));
-      const reply = match?.a || 'For assistance, call our helpline: 0800-12345 or email support@pakverify.gov.pk';
-      setMessages(prev => [...prev, { from: 'ai', text: reply }]);
+      if (requestSequence.current === sequence) {
+        setMessages(prev => [...prev, { from: 'ai', text: res.data.reply }]);
+      }
+    } catch (error) {
+      if (requestSequence.current === sequence) {
+        const reply = error.response?.data?.error || 'The assistant could not retrieve that information. Please try again.';
+        setMessages(prev => [...prev, { from: 'ai', text: reply }]);
+      }
     } finally {
-      setTyping(false);
+      if (requestSequence.current === sequence) setTyping(false);
     }
   };
 
@@ -109,10 +126,11 @@ export default function AIChatbot() {
           <div className="px-4 pb-2 flex flex-col gap-1.5">
             <p className="text-white/30 text-xs font-medium">Quick Questions:</p>
             <div className="flex flex-wrap gap-1.5">
-              {QUICK.map((q, i) => (
-                <button key={i} onClick={() => sendMessage(q)}
+              {roleDetails.quick.map((q) => (
+                <button key={q} onClick={() => sendMessage(q)}
+                  disabled={typing}
                   className="text-xs px-2.5 py-1 rounded-full border border-cyan-400/30 text-cyan-400 hover:bg-cyan-400/10 transition">
-                  {q.split(' ').slice(0, 4).join(' ')}…
+                  {q}
                 </button>
               ))}
             </div>

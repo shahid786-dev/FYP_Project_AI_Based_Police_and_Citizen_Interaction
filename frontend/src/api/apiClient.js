@@ -90,6 +90,7 @@ export const applicationAPI = {
   downloadCert:(id)       => API.get(`/api/citizen/applications/${id}/download-certificate/`, {
     responseType: 'blob',
   }),
+  documentFile:(id)       => API.get(`/api/documents/${id}/file/`, { responseType: 'blob' }),
 };
 
 // ─── Police Staff ──────────────────────────────────────────────
@@ -100,11 +101,19 @@ export const policeAPI = {
   confirmApp:      (id, data) => API.post(`/api/staff/applications/${id}/confirm/`, data),
   verifyPayment:   (id, data) => API.post(`/api/staff/applications/${id}/verify-payment/`, data),
   issueCert:       (id)       => API.post(`/api/staff/applications/${id}/issue-cert/`),
+  verifyCertificateIntegrity: (fd) => API.post('/api/staff/certificates/verify-integrity/', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
   criminalSearch:  (data, fd) => fd
     ? API.post('/api/criminals/search/', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
     : API.post('/api/criminals/search/', data),
   checkCriminalRecord: (applicationId) => API.post(`/api/criminals/applications/${applicationId}/check/`),
   analytics:       ()         => API.get('/api/police/analytics/'),
+};
+
+export const certificateManagementAPI = {
+  list:   (params) => API.get('/api/police/certificates/', { params }),
+  detail: (number) => API.get(`/api/police/certificates/${encodeURIComponent(number)}/`),
 };
 
 // ─── Police Authority ──────────────────────────────────────────
@@ -150,6 +159,10 @@ export const chatbotAPI = {
 // ─── Public Certificate Verification ──────────────────────────
 export const certAPI = {
   verify: (qrHash) => API.get(`/api/certificates/verify/${qrHash}/`),
+};
+
+export const publicPortalAPI = {
+  stats: () => API.get('/api/public/stats/'),
 };
 
 // ─── Incident, Safety & Emergency SOS API ─────────────────────

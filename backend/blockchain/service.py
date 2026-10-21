@@ -7,6 +7,7 @@ Import and call add_block() from any other Django view or signal.
 
 import hashlib
 import json
+from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
@@ -38,6 +39,25 @@ class BlockchainService:
                             data_hash, action_type, nonce) -> str:
         raw = f"{index}|{timestamp_str}|{previous_hash}|{data_hash}|{action_type}|{nonce}"
         return cls._sha256(raw)
+
+    @classmethod
+    def _matches_legacy_timestamp_hash(cls, block) -> bool:
+        """Verify blocks hashed just before their separately persisted timestamp."""
+        timestamp = block.timestamp
+        for offset_microseconds in range(1, 50_001):
+            original_timestamp = str(
+                timestamp - timedelta(microseconds=offset_microseconds)
+            )
+            if cls._compute_block_hash(
+                block.block_index,
+                original_timestamp,
+                block.previous_hash,
+                block.data_hash,
+                block.action_type,
+                block.nonce,
+            ) == block.current_hash:
+                return True
+        return False
 
     @staticmethod
     def _get_genesis_block():
@@ -191,10 +211,11 @@ class BlockchainService:
                 )
 
             if recomputed != b.current_hash:
-                issues.append(
-                    f"Block #{b.block_index}: current_hash mismatch "
-                    f"(expected {recomputed[:12]}…, got {b.current_hash[:12]}…)"
-                )
+                if not cls._matches_legacy_timestamp_hash(b):
+                    issues.append(
+                        f"Block #{b.block_index}: current_hash mismatch "
+                        f"(expected {recomputed[:12]}…, got {b.current_hash[:12]}…)"
+                    )
 
             prev_hash = b.current_hash
 

@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react';
 import { Shield, RefreshCw, ChevronDown, ChevronUp, Award } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { useSelector } from 'react-redux';
-import { authorityAPI, policeAPI, incidentsAPI } from '../api/apiClient';
+import { authorityAPI, policeAPI } from '../api/apiClient';
 import { useNotification, getApiErrorMessage } from '../components/notificationContext';
+import DocumentReview from '../components/DocumentReview';
 
 function StaffModal({ staff, onClose, onSaved }) {
   const [form, setForm] = useState(
-    staff || { full_name:'', cnic:'', email:'', mobile_number:'', password:'Staff@1234', role:'POLICE_STAFF' }
+    staff || { full_name:'', cnic:'', email:'', mobile_number:'', password:'', role:'POLICE_STAFF' }
   );
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -66,7 +67,7 @@ function StaffModal({ staff, onClose, onSaved }) {
                 className="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500" />
             ))}
             {!staff && (
-              <input type="password" value={form.password} onChange={set('password')} placeholder="Default Password"
+              <input type="password" required value={form.password} onChange={set('password')} placeholder="Set an initial password"
                 className="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500" />
             )}
             {err && <p className="text-red-400 text-xs">{err}</p>}
@@ -124,7 +125,11 @@ function AppRow({ app, onAction, notification }) {
   };
 
   const canDecide = app.status === 'FORWARDED_TO_ADMIN';
-  const canCert   = app.status === 'PAYMENT_CONFIRMED' || app.status === 'PAYMENT_VERIFIED';
+  const incompleteCompletedCertificate = app.status === 'COMPLETED'
+    && (!app.certificate?.certificate_number || !app.certificate?.pdf_file || !app.certificate?.certificate_hash);
+  const canCert = app.status === 'PAYMENT_CONFIRMED'
+    || app.status === 'PAYMENT_VERIFIED'
+    || incompleteCompletedCertificate;
 
   return (
     <div className="border border-slate-800 bg-slate-900 rounded-2xl overflow-hidden hover:border-slate-700 transition">
@@ -141,6 +146,11 @@ function AppRow({ app, onAction, notification }) {
 
       {open && (
         <div className="border-t border-slate-800 p-4 flex flex-col gap-4 text-xs">
+          <DocumentReview
+            documents={app.documents || []}
+            requiredTypes={['CNIC_FRONT', 'CNIC_BACK']}
+          />
+
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div><span className="text-slate-500 block text-[10px]">CNIC</span><span className="text-slate-200 font-mono">{app.applicant?.cnic}</span></div>
             <div><span className="text-slate-500 block text-[10px]">EMAIL</span><span className="text-slate-200">{app.applicant?.email}</span></div>
@@ -175,7 +185,7 @@ function AppRow({ app, onAction, notification }) {
           {canCert && (
             <button onClick={issueCert} disabled={!!acting}
               className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-amber-500/20">
-              <Award size={16}/> Issue Digital Police Certificate
+              <Award size={16}/>{incompleteCompletedCertificate ? 'Repair Certificate Record' : 'Issue Digital Police Certificate'}
             </button>
           )}
         </div>
@@ -190,7 +200,6 @@ export default function AuthorityDashboard() {
   const [tab, setTab] = useState('applications');
   const [apps, setApps] = useState([]);
   const [staff, setStaff] = useState([]);
-  const [sosList, setSosList] = useState([]);
   const [modal, setModal] = useState(null);
   const [loadErrors, setLoadErrors] = useState([]);
 
@@ -198,12 +207,11 @@ export default function AuthorityDashboard() {
     const results = await Promise.allSettled([
       policeAPI.allApplications(),
       authorityAPI.listStaff(),
-      incidentsAPI.listSOS(),
     ]);
-    const labels = ['verification applications', 'station staff', 'SOS alerts'];
+    const labels = ['verification applications', 'station staff'];
     const failedSections = results.flatMap((result, index) => {
       if (result.status === 'fulfilled') {
-        const setter = [setApps, setStaff, setSosList][index];
+        const setter = [setApps, setStaff][index];
         setter(result.value.data || []);
         return [];
       }
@@ -254,24 +262,6 @@ export default function AuthorityDashboard() {
     }
   };
 
-  const updateSOS = async (sos, nextStatus) => {
-    try {
-      await incidentsAPI.updateSOSStatus(sos.id, {
-        status: nextStatus,
-        police_notes: `Status updated by ${user?.full_name || 'Police Authority'}`,
-      });
-      const failedSections = await loadData();
-      notification.success(
-        'Emergency Status Updated',
-        failedSections.includes('SOS alerts')
-          ? 'The status was updated, but the alert list could not be refreshed.'
-          : 'The SOS alert list has been refreshed.',
-      );
-    } catch (error) {
-      notification.error('Unable to Update Emergency Status', getApiErrorMessage(error, 'The SOS alert status could not be updated. Please try again.'));
-    }
-  };
-
   return (
     <DashboardLayout role="police" userName={user?.full_name || 'Authority'}>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -283,7 +273,7 @@ export default function AuthorityDashboard() {
             <span className="text-amber-400 text-xs font-bold uppercase tracking-widest">High Police Command Portal</span>
           </div>
           <h1 className="font-display text-2xl font-bold text-white">Authority Command Dashboard</h1>
-          <p className="text-slate-400 text-xs mt-0.5">Final approvals, certificate generation, staff management, and emergency oversight</p>
+          <p className="text-slate-400 text-xs mt-0.5">Application approvals, certificate generation, and police staff management</p>
         </div>
         <button onClick={loadData} className="px-4 py-2 bg-slate-900 border border-slate-800 rounded-xl text-slate-300 text-xs font-bold hover:text-white">
           <RefreshCw size={14} className="inline mr-1"/> Refresh Ledger
@@ -303,9 +293,6 @@ export default function AuthorityDashboard() {
         </button>
         <button onClick={()=>setTab('staff')} className={`px-4 py-2.5 rounded-xl border ${tab==='staff'?'bg-blue-500/20 border-blue-500 text-blue-300':'bg-slate-900 border-slate-800 text-slate-400'}`}>
           👥 Station Staff ({staff.length})
-        </button>
-        <button onClick={()=>setTab('sos')} className={`px-4 py-2.5 rounded-xl border ${tab==='sos'?'bg-red-500/20 border-red-500 text-red-300':'bg-slate-900 border-slate-800 text-slate-400'}`}>
-          🚨 Live Emergency SOS ({sosList.length})
         </button>
       </div>
 
@@ -351,30 +338,6 @@ export default function AuthorityDashboard() {
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {/* SOS Oversight Tab */}
-      {tab === 'sos' && (
-        <div className="space-y-3">
-          {sosList.map(sos => (
-            <div key={sos.id} className="p-4 bg-slate-900 border border-red-900/40 rounded-2xl text-xs space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="font-mono text-red-400 font-bold">{sos.sos_id} • {sos.emergency_type}</span>
-                <span className="px-2 py-0.5 rounded bg-red-950 text-red-300 font-bold uppercase text-[10px]">{sos.status}</span>
-              </div>
-              <p className="text-slate-200">Location: {sos.location_address}</p>
-              <p className="text-slate-400">Contact: {sos.contact_number}</p>
-              {sos.status !== 'CLOSED' && (
-                <button
-                  onClick={() => updateSOS(sos, ({ RECEIVED: 'ACKNOWLEDGED', ACKNOWLEDGED: 'DISPATCHED', DISPATCHED: 'RESOLVED', RESOLVED: 'CLOSED' })[sos.status])}
-                  className="rounded-lg bg-red-800 px-3 py-1.5 font-bold text-white hover:bg-red-700"
-                >
-                  {({ RECEIVED: 'Acknowledge', ACKNOWLEDGED: 'Dispatch unit', DISPATCHED: 'Mark resolved', RESOLVED: 'Close alert' })[sos.status] || 'Update alert'}
-                </button>
-              )}
-            </div>
-          ))}
         </div>
       )}
 

@@ -132,10 +132,18 @@ export default function TrackApplicationPage() {
         {result?.type === 'CERTIFICATE' && (
           <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
             <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
-              <CheckCircle2 size={24} className="text-emerald-400" />
+              {result.data.valid
+                ? <CheckCircle2 size={24} className="text-emerald-400" />
+                : <AlertCircle size={24} className="text-amber-400" />}
               <div>
-                <h3 className="font-bold text-white text-base">Digital Police Certificate Verified ✓</h3>
-                <p className="text-slate-400 text-xs">Authentic record on police ledger</p>
+                <h3 className="font-bold text-white text-base">
+                  {result.data.valid ? 'Digital Police Certificate Valid' : 'Certificate Record Found'}
+                </h3>
+                <p className="text-slate-400 text-xs">
+                  {result.data.blockchain_verified
+                    ? 'Certificate issue record and ledger integrity verified'
+                    : `Blockchain status: ${result.data.blockchain_status || 'not verified'}`}
+                </p>
               </div>
             </div>
             <div className="space-y-2 text-xs">
@@ -149,7 +157,9 @@ export default function TrackApplicationPage() {
               </div>
               <div className="flex justify-between py-1.5 border-b border-slate-800">
                 <span className="text-slate-400">Status:</span>
-                <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-bold uppercase text-[10px]">
+                <span className={`px-2 py-0.5 rounded font-bold uppercase text-[10px] ${
+                  result.data.valid ? 'bg-emerald-950 text-emerald-300' : 'bg-amber-950 text-amber-200'
+                }`}>
                   {result.data.status}
                 </span>
               </div>

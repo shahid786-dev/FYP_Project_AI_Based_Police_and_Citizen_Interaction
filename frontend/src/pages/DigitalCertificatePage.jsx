@@ -18,20 +18,27 @@ export default function DigitalCertificatePage() {
       // ── Public QR scan verification ─────────────────────────────────────
       certAPI.verify(certNumber)
         .then(res => { setCert(res.data); setLoading(false); })
-        .catch(() => { setError('Invalid or expired certificate number.'); setLoading(false); });
+        .catch((requestError) => {
+          const responseStatus = requestError.response?.status;
+          setError(responseStatus === 404
+            ? 'Certificate not found. Check the certificate number and try again.'
+            : 'Certificate verification is temporarily unavailable. Please try again later.');
+          setLoading(false);
+        });
     } else {
       // ── Citizen: load completed application + certificate data ───────────
       applicationAPI.list()
         .then(res => {
           const completed = res.data.filter(a => a.status === 'COMPLETED');
-          setApplications(completed);
-          if (completed.length > 0) {
-            const app = completed[0];
+          const issued = completed.filter(a => a.certificate?.certificate_number);
+          setApplications(issued);
+          if (issued.length > 0) {
+            const app = issued[0];
             const certData = app.certificate;
 
             // Build cert shape that matches the public-verify response shape
             setCert({
-              certificate_number: certData?.certificate_number || app.tracking_id,
+              certificate_number: certData.certificate_number,
               applicant_name:     app.applicant?.full_name     || 'N/A',
               cnic:               app.applicant?.cnic          || 'N/A',
               province:           app.nadra_details?.province  || app.applicant_province || null,
@@ -44,10 +51,17 @@ export default function DigitalCertificatePage() {
               valid:              certData?.status === 'VALID',
               app_data:           app,
             });
+          } else if (completed.length > 0) {
+            setError('Your application is marked completed, but its certificate record is unavailable. Please contact the issuing authority.');
           }
           setLoading(false);
         })
-        .catch(() => { setError('Failed to load certificates.'); setLoading(false); });
+        .catch((requestError) => {
+          setError(requestError.response
+            ? 'Certificates could not be loaded. Please try again.'
+            : 'The certificate service could not be reached. Please try again later.');
+          setLoading(false);
+        });
     }
   }, [certNumber]);
 
@@ -68,6 +82,22 @@ export default function DigitalCertificatePage() {
   };
   const authorityName = cert?.authority
     || (cert?.province ? (PROVINCE_AUTHORITY[cert.province] || `${cert.province} Police`) : 'Pakistan Police');
+
+  const isCertificateAuthentic = cert?.valid === true && cert?.integrity_valid !== false;
+  const certificateStateLabel = cert?.integrity_valid === false
+    ? 'TAMPERED'
+    : cert?.expired
+      ? 'EXPIRED'
+      : cert?.valid
+        ? 'AUTHENTIC'
+        : 'INVALID';
+  const certificateStateDetail = cert?.integrity_valid === false
+    ? (cert?.integrity_reason || 'Certificate content does not match the original issued record.')
+    : cert?.expired
+      ? 'This certificate has expired.'
+      : cert?.valid
+        ? 'The original PDF hash matches the issued record.'
+        : 'This certificate is not currently valid.';
 
   // QR target: use backend-provided verification_url if available,
   // otherwise fall back to window.location.origin + cert number
@@ -143,18 +173,33 @@ export default function DigitalCertificatePage() {
       </div>
 
       {/* Authenticity banner */}
-      <div className="glass-card p-4 border border-green-400/30 bg-green-400/5 flex items-center gap-3 mb-6">
-        <CheckCircle size={20} className="text-green-400 flex-shrink-0"/>
+      <div className={`glass-card p-4 border flex items-center gap-3 mb-6 ${isCertificateAuthentic ? 'border-green-400/30 bg-green-400/5' : 'border-red-400/30 bg-red-400/5'}`}>
+        <div className={isCertificateAuthentic ? 'text-green-400' : 'text-red-400'}>
+          {isCertificateAuthentic ? <CheckCircle size={20} className="flex-shrink-0"/> : <AlertCircle size={20} className="flex-shrink-0"/>}
+        </div>
         <div className="flex-1">
-          <p className={`font-semibold text-sm ${cert?.valid ? 'text-green-400' : 'text-red-400'}`}>
-            {cert?.valid ? '✓ VALID CERTIFICATE' : 'INVALID OR EXPIRED CERTIFICATE'}
+          <p className={`font-semibold text-sm ${isCertificateAuthentic ? 'text-green-400' : 'text-red-400'}`}>
+            {isCertificateAuthentic ? '✓ AUTHENTIC CERTIFICATE' : '⚠ CERTIFICATE VERIFICATION FAILED'}
           </p>
-          <p className="text-white/40 text-xs">This certificate is digitally signed and can be verified using the QR code below.</p>
+          <p className="text-white/40 text-xs">{certificateStateDetail}</p>
         </div>
         <span className="font-mono text-cyan-400 text-xs border border-cyan-400/30 px-2 py-1 rounded-lg">
           {cert?.certificate_number || 'CERT-XXXXXX'}
         </span>
       </div>
+
+      {(cert?.original_hash || cert?.current_hash) && (
+        <div className="grid md:grid-cols-2 gap-4 mb-6">
+          <div className="glass-card p-4 border border-white/10 bg-white/5">
+            <p className="text-white/40 text-[11px] uppercase tracking-[0.2em] mb-2">Original Hash</p>
+            <p className="font-mono text-xs text-cyan-300 break-all">{cert?.original_hash || 'N/A'}</p>
+          </div>
+          <div className="glass-card p-4 border border-white/10 bg-white/5">
+            <p className="text-white/40 text-[11px] uppercase tracking-[0.2em] mb-2">Current PDF Hash</p>
+            <p className="font-mono text-xs text-amber-300 break-all">{cert?.current_hash || 'N/A'}</p>
+          </div>
+        </div>
+      )}
 
       {/* Certificate */}
       <div className="flex justify-center mb-10">
@@ -219,13 +264,15 @@ export default function DigitalCertificatePage() {
             </div>
 
             {/* AI Verification badge */}
-            <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl p-3 mb-8">
-              <CheckCircle size={20} className="text-green-600 flex-shrink-0"/>
-              <div className="flex-1">
-                <p className="text-green-800 font-semibold text-xs">AI Verified</p>
-                <p className="text-green-600 text-xs">Deepfake: Clear | Liveness: Confirmed | Identity: Matched</p>
-              </div>
-              <div className="text-green-600 text-xs font-mono border border-green-300 px-2 py-1 rounded-lg">AUTHENTIC</div>
+            <div className={`flex items-center gap-3 border rounded-xl p-3 mb-8 ${isCertificateAuthentic ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+            <div className={isCertificateAuthentic ? 'text-green-600' : 'text-red-600'}>
+              {isCertificateAuthentic ? <CheckCircle size={20} className="flex-shrink-0"/> : <AlertCircle size={20} className="flex-shrink-0"/>}
+            </div>
+            <div className="flex-1">
+              <p className={isCertificateAuthentic ? 'text-green-800 font-semibold text-xs' : 'text-red-800 font-semibold text-xs'}>Certificate Integrity {isCertificateAuthentic ? 'Verified' : 'Failed'}</p>
+              <p className={isCertificateAuthentic ? 'text-green-600 text-xs' : 'text-red-600 text-xs'}>{certificateStateDetail}</p>
+            </div>
+            <div className={isCertificateAuthentic ? 'text-green-600 text-xs font-mono border border-green-300 px-2 py-1 rounded-lg' : 'text-red-600 text-xs font-mono border border-red-300 px-2 py-1 rounded-lg'}>{certificateStateLabel}</div>
             </div>
 
             {/* Signatures + QR */}

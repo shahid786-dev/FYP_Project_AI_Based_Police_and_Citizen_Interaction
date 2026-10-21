@@ -23,6 +23,8 @@ import AccidentAssistancePage from './pages/AccidentAssistancePage';
 import AboutUsPage           from './pages/AboutUsPage';
 import { TermsPage, PrivacyPage } from './pages/LegalPages';
 import CriminalRecordsPage  from './pages/CriminalRecordsPage';
+import CertificateIntegrityPage from './pages/CertificateIntegrityPage';
+import CertificateManagementPage from './pages/CertificateManagementPage';
 import AIChatbot             from './components/AIChatbot';
 import NotificationProvider from './components/NotificationProvider';
 
@@ -63,6 +65,11 @@ export default function App() {
             <BlockchainExplorer />
           </ProtectedRoute>
         } />
+        <Route path="/police/certificates" element={
+          <ProtectedRoute allowedRoles={['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']}>
+            <CertificateManagementPage />
+          </ProtectedRoute>
+        } />
         <Route path="/verify/:certNumber" element={<DigitalCertificatePage />} />
         <Route path="/verify/certificate/:certNumber" element={<DigitalCertificatePage />} />
 
@@ -90,10 +97,16 @@ export default function App() {
         <Route path="/staff/dashboard" element={
           <ProtectedRoute allowedRoles={['POLICE_STAFF']}><StaffDashboard /></ProtectedRoute>
         } />
+        <Route path="/staff/certificate-integrity" element={
+          <ProtectedRoute allowedRoles={['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']}><CertificateIntegrityPage /></ProtectedRoute>
+        } />
 
         {/* ── Police Authority ── */}
         <Route path="/authority/dashboard" element={
           <ProtectedRoute allowedRoles={['POLICE_AUTHORITY']}><AuthorityDashboard /></ProtectedRoute>
+        } />
+        <Route path="/authority/certificate-integrity" element={
+          <ProtectedRoute allowedRoles={['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']}><CertificateIntegrityPage /></ProtectedRoute>
         } />
 
         {/* ── Legacy police route → smart redirect ── */}

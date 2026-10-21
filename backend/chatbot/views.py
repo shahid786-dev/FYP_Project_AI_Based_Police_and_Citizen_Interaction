@@ -1,98 +1,219 @@
-from rest_framework import status, permissions
+import re
+
+from django.db.models import Q
+from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import FaqKnowledge
-import os
 
-FAQ_DATA = [
-    {"q": "how to apply", "a": "Login to your Citizen Portal → click 'New Request' → choose your certificate type → upload CNIC + photo → submit. Processing takes 3-7 working days."},
-    {"q": "character certificate", "a": "A Character Certificate confirms you have no criminal record. It is required for jobs, visa applications, and government purposes."},
-    {"q": "documents required", "a": "You need: (1) Original CNIC Front & Back, (2) Recent passport-size photo, (3) Proof of address (utility bill), (4) Any supporting documents."},
-    {"q": "how long", "a": "Standard verification takes 3-5 working days after payment. Urgent processing is available within 24-48 hours for an additional fee."},
-    {"q": "track application", "a": "Go to 'Track Application', enter your Tracking ID (received via SMS/Email after submission) to see real-time status updates."},
-    {"q": "payment", "a": "We accept JazzCash, EasyPaisa, Credit/Debit Cards (Visa, Mastercard), and Bank Transfer. All payments are 100% secure and SSL encrypted."},
-    {"q": "fee", "a": "The total fee is PKR 650: Application Fee PKR 500 + AI Verification PKR 100 + Processing PKR 50."},
-    {"q": "tenant verification", "a": "For tenant verification, the landlord submits the tenant's CNIC. The police will verify the tenant's background within 3-5 days."},
-    {"q": "rejected", "a": "If rejected, you will receive an SMS/email with the reason. Common reasons: mismatched face scan, criminal record found, or incomplete documents."},
-    {"q": "qr code", "a": "The QR code on your certificate can be scanned by any employer, embassy, or institution to instantly verify its authenticity online."},
-    {"q": "contact", "a": "For assistance, call our 24/7 helpline at 0800-12345 or email support@pakverify.gov.pk"},
-    {"q": "cnic", "a": "Your CNIC (Computerized National Identity Card) is your primary identification. Format: XXXXX-XXXXXXX-X (13 digits)."},
-    {"q": "police clearance", "a": "Police Clearance Certificate (PCC) is needed for international travel, immigration, or overseas employment. Apply under 'Passport Police Clearance'."},
-    {"q": "otp", "a": "OTP (One-Time Password) is a 6-digit code sent to your registered mobile for security verification. It is valid for 10 minutes."},
-    {"q": "face verification", "a": "AI face verification compares your live selfie with your CNIC photo using biometric algorithms. Ensure good lighting and hold still."},
-]
+from applications.models import Application, Certificate, Document, Payment
+from criminals.models import CriminalRecord
 
-def get_faq_answer(query: str) -> str:
-    query_lower = query.lower()
-    best_match = None
-    best_score = 0
 
-    # First try database FAQ
-    db_faqs = FaqKnowledge.objects.all()
-    for faq in db_faqs:
-        words = faq.question.lower().split()
-        score = sum(1 for word in words if word in query_lower)
-        if score > best_score:
-            best_score = score
-            best_match = faq.answer
+POLICE_ROLES = {'POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN'}
+CNIC_PATTERN = re.compile(r'^\d{5}-?\d{7}-?\d$')
+TRACKING_PATTERN = re.compile(r'\bPKV-\d{4}-\d{6}\b', re.IGNORECASE)
+CERTIFICATE_PATTERN = re.compile(r'\bCERT-\d{4}-\d{6}\b', re.IGNORECASE)
+CERTIFICATE_REFERENCE_PATTERN = re.compile(
+    r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+    re.IGNORECASE,
+)
+APPLICATION_STATUSES = dict(Application.STATUS_CHOICES)
+DOCUMENT_TYPES = dict(Document.DOC_TYPES)
+APPLICATION_TYPES = [label for _, label in Application.TYPE_CHOICES]
 
-    # Then try static FAQ
-    for faq in FAQ_DATA:
-        words = faq["q"].lower().split()
-        score = sum(1 for word in words if word in query_lower)
-        if score > best_score:
-            best_score = score
-            best_match = faq["a"]
 
-    if best_match and best_score > 0:
-        return best_match
+def _application_for_user(user, identifier):
+    queryset = Application.objects.select_related('applicant').prefetch_related('documents')
+    if user.role == 'CITIZEN':
+        queryset = queryset.filter(applicant=user)
+    elif user.role == 'SUPER_ADMIN' and user.province:
+        queryset = queryset.filter(
+            Q(applicant_province=user.province) | Q(applicant__province=user.province)
+        )
 
-    return ("I understand your query about Pakistani Police Verification. For detailed assistance, "
-            "please call our helpline: 0800-12345 or email support@pakverify.gov.pk. "
-            "Our agents are available 24/7 in English and Urdu.")
+    if identifier.isdigit():
+        return queryset.filter(pk=int(identifier)).first()
+    return queryset.filter(tracking_id__iexact=identifier).first()
+
+
+def _application_summary(application):
+    document_labels = [
+        DOCUMENT_TYPES.get(document.document_type, document.document_type)
+        for document in application.documents.all()
+    ]
+    summary = [
+        f"Application {application.tracking_id}",
+        f"Type: {application.application_type}",
+        f"Status: {APPLICATION_STATUSES.get(application.status, application.status)}",
+        f"Submitted: {application.submitted_at:%Y-%m-%d}",
+        "Uploaded documents: " + (', '.join(document_labels) if document_labels else 'None'),
+    ]
+    if application.status in {'REJECTED', 'AUTHORITY_REJECTED'} and application.notes:
+        summary.append(f"Reason recorded: {application.notes}")
+    if application.status in {'PENDING', 'UNDER_REVIEW', 'FACE_VERIFIED', 'CRIMINAL_CHECK'}:
+        summary.append("Next step: check your portal for updates or any requested action.")
+    elif application.status in {'APPROVED', 'COMPLETED'} and not hasattr(application, 'certificate'):
+        summary.append("Next step: check the portal for certificate issuance or download.")
+    return '\n'.join(summary)
+
+
+def _certificate_for_user(user, identifier):
+    queryset = Certificate.objects.select_related('application', 'application__applicant')
+    if user.role == 'CITIZEN':
+        queryset = queryset.filter(application__applicant=user)
+    elif user.role == 'SUPER_ADMIN' and user.province:
+        queryset = queryset.filter(
+            Q(application__applicant_province=user.province)
+            | Q(application__applicant__province=user.province)
+        )
+    return queryset.filter(
+        Q(certificate_number__iexact=identifier) | Q(qr_code_hash__iexact=identifier)
+    ).first()
+
+
+def _certificate_summary(certificate):
+    return (
+        f"Certificate: {certificate.certificate_number}\n"
+        f"Status: {certificate.get_status_display()}\n"
+        f"Issue date: {certificate.issue_date:%Y-%m-%d}\n"
+        f"Expiry date: {certificate.validity_expiry:%Y-%m-%d}\n"
+        f"Application: {certificate.application.tracking_id}\n"
+        "Download it from the Certificates section of your portal."
+    )
+
+
+def _faq_answer(message):
+    text = message.lower()
+    if any(word in text for word in ('document', 'requirement', 'upload')):
+        requirements = ', '.join(DOCUMENT_TYPES.values())
+        types = ', '.join(APPLICATION_TYPES)
+        return (
+            f"The application supports these types: {types}. "
+            f"The document upload workflow accepts: {requirements}. "
+            "The project does not define mandatory documents for each application type, "
+            "file-size/format limits, or a processing-time estimate; check your portal "
+            "for the requirements shown during submission."
+        )
+    if any(word in text for word in ('how to apply', 'submit', 'new application', 'apply')):
+        return (
+            "Sign in to the Citizen Portal, open New Request, choose one of the available "
+            f"application types ({', '.join(APPLICATION_TYPES)}), complete the form, "
+            "and submit it. You can then upload documents from that application's page "
+            "and follow its status in the portal."
+        )
+    if any(word in text for word in ('payment', 'fee', 'pay', 'challan')):
+        methods = ', '.join(label for _, label in Payment.PAYMENT_METHOD_CHOICES)
+        return (
+            f"Payment records support these methods: {methods}. Your challan amount and "
+            "payment status are available in the application portal. No additional fee "
+            "or payment-provider availability is asserted here."
+        )
+    if any(word in text for word in ('certificate', 'qr', 'verify')):
+        return (
+            "Issued certificates can be verified using the existing certificate verification "
+            "page and QR/reference value. Citizens can download their issued certificate "
+            "from their application in the portal."
+        )
+
+    return (
+        "I can explain application steps, document-upload options, payment information "
+        "shown by the portal, and certificate verification. For record lookups, include "
+        "an application tracking ID or certificate number while signed in."
+    )
 
 
 class ChatbotView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        user_message = request.data.get('message', '').strip()
-        if not user_message:
-            return Response({'error': 'Message is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        user_message = request.data.get('message')
+        if not isinstance(user_message, str) or not user_message.strip():
+            return Response(
+                {'error': 'Message is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(user_message) > 1000:
+            return Response(
+                {'error': 'Message must be 1000 characters or fewer.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Try OpenAI API if key exists
-        openai_key = os.environ.get('OPENAI_API_KEY')
-        if openai_key:
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=openai_key)
-
-                system_prompt = """You are PakVerify AI Assistant, an intelligent chatbot for the Pakistani Police Verification Portal.
-Your purpose is to help citizens with:
-- Police verification certificate applications
-- Required documents
-- Payment methods (JazzCash, EasyPaisa, Card, Bank Transfer)
-- Application tracking
-- Face verification process
-- Certificate downloads
-Keep answers concise, helpful, and relevant to Pakistani government services.
-Respond in English but greet in Urdu if appropriate."""
-
-                completion = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message}
-                    ],
-                    max_tokens=300,
-                    temperature=0.7
+        message = user_message.strip()
+        tracking_match = TRACKING_PATTERN.search(message)
+        certificate_match = (
+            CERTIFICATE_PATTERN.search(message)
+            or CERTIFICATE_REFERENCE_PATTERN.search(message)
+        )
+        if tracking_match or re.search(r'\bapplication\s+(?:id\s*)?#?\d+\b', message, re.I):
+            if not request.user.is_authenticated:
+                return Response(
+                    {'error': 'Sign in to retrieve application information.'},
+                    status=status.HTTP_401_UNAUTHORIZED,
                 )
-                reply = completion.choices[0].message.content
-                return Response({'reply': reply, 'source': 'openai'}, status=status.HTTP_200_OK)
-            except Exception as e:
-                print(f"OpenAI API Error: {e}")
-                # Fall through to local FAQ
+            identifier = (
+                tracking_match.group(0) if tracking_match
+                else re.search(r'\bapplication\s+(?:id\s*)?#?(\d+)\b', message, re.I).group(1)
+            )
+            application = _application_for_user(request.user, identifier)
+            if application is None:
+                return Response(
+                    {'error': 'Application is unavailable or you are not authorized to view it.'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            return Response({'reply': _application_summary(application), 'source': 'application'})
 
-        # Local RAG-based FAQ response
-        reply = get_faq_answer(user_message)
-        return Response({'reply': reply, 'source': 'faq'}, status=status.HTTP_200_OK)
+        if certificate_match:
+            if not request.user.is_authenticated:
+                return Response(
+                    {'error': 'Sign in to retrieve certificate information.'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            certificate = _certificate_for_user(request.user, certificate_match.group(0))
+            if certificate is None:
+                return Response(
+                    {'error': 'Certificate is unavailable or you are not authorized to view it.'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            return Response({'reply': _certificate_summary(certificate), 'source': 'certificate'})
+
+        criminal_lookup = re.search(
+            r'\b(criminal|background)\b'
+            r'|(?:\b(?:check|search|look up|lookup)\b.*\bcnic\b)'
+            r'|(?:\bcnic\b.*\b(?:check|search|look up|lookup)\b)',
+            message,
+            re.I,
+        )
+        if criminal_lookup:
+            if not request.user.is_authenticated:
+                return Response(
+                    {'error': 'Sign in with an authorized police account to perform this lookup.'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            if request.user.role not in POLICE_ROLES:
+                return Response(
+                    {'error': 'You are not authorized to perform criminal-record lookups.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            cnic_match = re.search(r'\b\d{5}-?\d{7}-?\d\b', message)
+            if not cnic_match or not CNIC_PATTERN.fullmatch(cnic_match.group(0)):
+                return Response(
+                    {'error': 'Provide a CNIC in the format 12345-1234567-1.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            cnic = cnic_match.group(0).replace('-', '')
+            record = CriminalRecord.objects.filter(cnic__in=(cnic, cnic_match.group(0))).first()
+            if record is None:
+                reply = (
+                    "No matching record was found in this system's locally maintained "
+                    "criminal-record dataset. This is not a check against an external "
+                    "government database and is not a legal finding."
+                )
+            else:
+                reply = (
+                    "A matching entry was found in this system's locally maintained "
+                    f"criminal-record dataset (status: {record.get_status_display()}). "
+                    "A database match is not itself a verified legal finding."
+                )
+            return Response({'reply': reply, 'source': 'local_criminal_records'})
+
+        return Response({'reply': _faq_answer(message), 'source': 'project_guidance'})

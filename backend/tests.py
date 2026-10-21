@@ -1,5 +1,9 @@
+import hashlib
+import tempfile
+from datetime import date, timedelta
 from django.test import TestCase
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from rest_framework import status
 from django.utils import timezone
@@ -24,10 +28,96 @@ def create_citizen(**kwargs):
 def create_staff(**kwargs):
     defaults = dict(
         cnic='00000-1111111-1', email='staff@test.com',
-        password='Staff@1234', full_name='Test Staff', role='POLICE_STAFF'
+        password='TestStaffPass!456', full_name='Test Staff', role='POLICE_STAFF'
     )
     defaults.update(kwargs)
     return User.objects.create_user(**defaults)
+
+
+class StaffPasswordRequiredTests(TestCase):
+    def setUp(self):
+        self.authority = create_citizen(
+            cnic='11111-1111111-1',
+            email='authority-password-test@example.com',
+            role='POLICE_AUTHORITY',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.authority)
+
+    def test_staff_creation_requires_password(self):
+        response = self.client.post('/api/authority/staff/', {
+            'cnic': '22222-2222222-2',
+            'email': 'new-staff@example.com',
+            'full_name': 'New Staff',
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(cnic='22222-2222222-2').exists())
+
+    def test_staff_password_reset_requires_password(self):
+        staff = create_staff()
+
+        response = self.client.post(
+            f'/api/authority/staff/{staff.pk}/reset-password/',
+            {},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(staff.check_password('TestStaffPass!456'))
+
+
+class PublicPortalStatsTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def create_application(self, citizen, status, issue_certificate=False):
+        application = Application.objects.create(
+            applicant=citizen,
+            application_type='Character Certificate',
+            purpose='Employment',
+            current_address='Lahore',
+            nearest_station='Central Police Station',
+            status=status,
+        )
+        if issue_certificate:
+            Certificate.objects.create(
+                application=application,
+                validity_expiry=timezone.localdate() + timedelta(days=365),
+                digital_signature='test-signature',
+                verification_url='/verify/test/',
+                pdf_file='certificates/test.pdf',
+                certificate_hash=hashlib.sha256(application.tracking_id.encode()).hexdigest(),
+            )
+        return application
+
+    def test_counts_unique_citizens_with_completed_issued_certificates(self):
+        citizen = create_citizen()
+        self.create_application(citizen, 'COMPLETED', issue_certificate=True)
+        self.create_application(citizen, 'COMPLETED', issue_certificate=True)
+        self.create_application(citizen, 'PENDING', issue_certificate=True)
+        self.create_application(citizen, 'REJECTED', issue_certificate=True)
+        self.create_application(citizen, 'COMPLETED')
+
+        response = self.client.get('/api/public/stats/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {'verified_citizens': 1})
+
+        second_citizen = create_citizen(
+            cnic='35202-7654321-9',
+            email='second-citizen@example.com',
+            full_name='Second Citizen',
+        )
+        self.create_application(second_citizen, 'COMPLETED', issue_certificate=True)
+
+        response = self.client.get('/api/public/stats/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {'verified_citizens': 2})
+
+    def test_returns_zero_when_no_citizens_have_completed_verification(self):
+        response = self.client.get('/api/public/stats/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {'verified_citizens': 0})
 
 
 # ─── Auth Tests ──────────────────────────────────────────────────────────────
@@ -39,11 +129,19 @@ class AuthTests(TestCase):
         data = {
             'cnic': '35202-7777777-7', 'email': 'new@test.com',
             'password': 'Pass@1234', 'full_name': 'New Citizen',
+            'father_name': 'Citizen Father',
+            'dob': '1992-06-15',
+            'address': 'House 10, Model Town, Lahore',
             'province': 'Punjab', 'district': 'Lahore'
         }
         res = self.client.post('/api/auth/register/', data)
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertIn('otp_code', res.data)
+        citizen = User.objects.get(cnic=data['cnic'])
+        self.assertEqual(citizen.father_name, 'Citizen Father')
+        self.assertEqual(citizen.dob, date(1992, 6, 15))
+        self.assertEqual(citizen.address, 'House 10, Model Town, Lahore')
+        self.assertEqual(citizen.province, 'Punjab')
 
     def test_register_duplicate_cnic_fails(self):
         create_citizen()
@@ -784,9 +882,165 @@ class ChatbotTests(TestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIn('reply', res.data)
         self.assertTrue(len(res.data['reply']) > 10)
+        self.assertEqual(res.data['source'], 'project_guidance')
+        self.assertNotIn('3-7 days', res.data['reply'])
 
     def test_chatbot_empty_message_fails(self):
         res = self.client.post('/api/chatbot/chat/', {'message': ''})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_chatbot_rejects_long_messages(self):
+        res = self.client.post('/api/chatbot/chat/', {'message': 'x' * 1001})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_document_guidance_uses_supported_types_without_claiming_requirements(self):
+        res = self.client.post(
+            '/api/chatbot/chat/', {'message': 'What documents are required?'}
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('CNIC Front Side', res.data['reply'])
+        self.assertIn('does not define mandatory documents', res.data['reply'])
+
+    def test_anonymous_user_cannot_track_private_application(self):
+        citizen = create_citizen()
+        app = Application.objects.create(
+            applicant=citizen,
+            application_type='Character Certificate',
+            purpose='Employment',
+            current_address='Lahore',
+            nearest_station='Central Police Station',
+        )
+        res = self.client.post(
+            '/api/chatbot/chat/', {'message': f'Track application {app.tracking_id}'}
+        )
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_citizen_can_track_own_application_but_not_another_citizens(self):
+        owner = create_citizen()
+        another_citizen = create_citizen(
+            cnic='35202-7654321-9',
+            email='another@example.com',
+            full_name='Another Citizen',
+        )
+        own_app = Application.objects.create(
+            applicant=owner,
+            application_type='Character Certificate',
+            purpose='Employment',
+            current_address='Lahore',
+            nearest_station='Central Police Station',
+        )
+        other_app = Application.objects.create(
+            applicant=another_citizen,
+            application_type='Tenant Verification',
+            purpose='Housing',
+            current_address='Karachi',
+            nearest_station='Central Police Station',
+        )
+        self.client.force_authenticate(user=owner)
+
+        own_res = self.client.post(
+            '/api/chatbot/chat/', {'message': f'Track application {own_app.tracking_id}'}
+        )
+        self.assertEqual(own_res.status_code, status.HTTP_200_OK)
+        self.assertIn(own_app.tracking_id, own_res.data['reply'])
+        self.assertNotIn(owner.cnic, own_res.data['reply'])
+
+        other_res = self.client.post(
+            '/api/chatbot/chat/', {'message': f'Track application {other_app.tracking_id}'}
+        )
+        self.assertEqual(other_res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn(other_app.tracking_id, str(other_res.data))
+
+    def test_citizen_can_retrieve_own_certificate(self):
+        citizen = create_citizen()
+        app = Application.objects.create(
+            applicant=citizen,
+            application_type='Character Certificate',
+            purpose='Employment',
+            current_address='Lahore',
+            nearest_station='Central Police Station',
+        )
+        cert = Certificate.objects.create(
+            application=app,
+            validity_expiry=timezone.localdate() + timedelta(days=365),
+            digital_signature='test-signature',
+            verification_url='/verify/test/',
+        )
+        self.client.force_authenticate(user=citizen)
+
+        res = self.client.post(
+            '/api/chatbot/chat/', {'message': f'Check certificate {cert.certificate_number}'}
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn(cert.certificate_number, res.data['reply'])
+
+    def test_citizen_cannot_retrieve_another_citizens_certificate(self):
+        owner = create_citizen()
+        other_citizen = create_citizen(
+            cnic='35202-7654321-9',
+            email='another-certificate@example.com',
+            full_name='Another Citizen',
+        )
+        app = Application.objects.create(
+            applicant=other_citizen,
+            application_type='Character Certificate',
+            purpose='Employment',
+            current_address='Karachi',
+            nearest_station='Central Police Station',
+        )
+        cert = Certificate.objects.create(
+            application=app,
+            validity_expiry=timezone.localdate() + timedelta(days=365),
+            digital_signature='test-signature',
+            verification_url='/verify/test/',
+        )
+        self.client.force_authenticate(user=owner)
+
+        res = self.client.post(
+            '/api/chatbot/chat/', {'message': f'Check certificate {cert.certificate_number}'}
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn(cert.certificate_number, str(res.data))
+
+    def test_citizen_cannot_use_criminal_record_lookup(self):
+        self.client.force_authenticate(user=create_citizen())
+        res = self.client.post(
+            '/api/chatbot/chat/',
+            {'message': 'Check criminal records for 42101-1234567-1'},
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_staff_criminal_lookup_distinguishes_local_match_and_no_match(self):
+        staff = create_staff()
+        CriminalRecord.objects.create(
+            cnic='42101-9876543-2',
+            name='Test Record',
+            status='CRIMINAL_MATCH',
+        )
+        self.client.force_authenticate(user=staff)
+
+        match_res = self.client.post(
+            '/api/chatbot/chat/',
+            {'message': 'Check criminal records for 42101-9876543-2'},
+        )
+        self.assertEqual(match_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(match_res.data['source'], 'local_criminal_records')
+        self.assertIn('matching entry was found', match_res.data['reply'])
+        self.assertIn('locally maintained', match_res.data['reply'])
+
+        no_match_res = self.client.post(
+            '/api/chatbot/chat/',
+            {'message': 'Check criminal records for 42101-1234567-1'},
+        )
+        self.assertEqual(no_match_res.status_code, status.HTTP_200_OK)
+        self.assertIn('No matching record', no_match_res.data['reply'])
+
+    def test_staff_criminal_lookup_validates_cnic(self):
+        self.client.force_authenticate(user=create_staff())
+        res = self.client.post(
+            '/api/chatbot/chat/',
+            {'message': 'Check criminal records for 1234'},
+        )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
 
@@ -896,6 +1150,46 @@ class CertificateDataIntegrityTests(TestCase):
         nadra = data.get('nadra_details', {})
         # Province must NOT be Punjab for a Sindh citizen
         self.assertNotEqual(nadra.get('province'), 'Punjab')
+
+    def test_identity_details_fall_back_to_citizen_profile_when_match_metadata_is_placeholder(self):
+        from face_verification.models import FaceVerificationReport
+        from applications.serializers import ApplicationSerializer
+
+        citizen = create_citizen(
+            cnic='35202-4444444-4',
+            email='identity-details@test.com',
+            full_name='Shahid Ali',
+            father_name='Muhammad Ali',
+            dob=date(1990, 5, 4),
+            gender='MALE',
+            province='Punjab',
+            district='Lahore',
+            address='House 12, Model Town, Lahore',
+        )
+        application = make_app_for_citizen(citizen, 'PENDING')
+        FaceVerificationReport.objects.create(
+            citizen=citizen,
+            application=application,
+            matched_cnic=citizen.cnic,
+            matched_citizen_name=f'Citizen ({citizen.cnic})',
+            matched_father_name='N/A',
+            matched_date_of_birth='N/A',
+            matched_gender='N/A',
+            matched_address='N/A',
+            matched_district='N/A',
+            matched_province='N/A',
+            status='VERIFIED',
+        )
+
+        data = ApplicationSerializer(application).data['nadra_details']
+
+        self.assertEqual(data['full_name'], 'Shahid Ali')
+        self.assertEqual(data['father_name'], 'Muhammad Ali')
+        self.assertEqual(data['date_of_birth'], '1990-05-04')
+        self.assertEqual(data['gender'], 'MALE')
+        self.assertEqual(data['district'], 'Lahore')
+        self.assertEqual(data['province'], 'Punjab')
+        self.assertEqual(data['permanent_address'], 'House 12, Model Town, Lahore')
 
     # ── 10-13: Certificate contains correct citizen data ────────────────────
 
@@ -1080,6 +1374,176 @@ class CertificateDataIntegrityTests(TestCase):
         self.assertEqual(get_authority_name(''),    'Pakistan Police')
 
 
+class ProtectedDocumentFileTests(TestCase):
+    def setUp(self):
+        self.media_directory = tempfile.TemporaryDirectory()
+        self.settings_override = override_settings(MEDIA_ROOT=self.media_directory.name)
+        self.settings_override.enable()
+        self.citizen = create_citizen()
+        self.other_citizen = create_citizen(
+            cnic='35202-7654321-9',
+            email='other-citizen@example.com',
+            full_name='Other Citizen',
+        )
+        self.staff = create_staff()
+        self.application = Application.objects.create(
+            applicant=self.citizen,
+            application_type='Character Certificate',
+            purpose='Employment',
+            current_address='Lahore',
+            nearest_station='Central Police Station',
+        )
+        self.document = Document.objects.create(
+            application=self.application,
+            document_type='CNIC_FRONT',
+            file=SimpleUploadedFile(
+                'cnic-front.png',
+                b'\x89PNG\r\n\x1a\nprotected-cnic-data',
+                content_type='image/png',
+            ),
+        )
+
+    def tearDown(self):
+        self.settings_override.disable()
+        self.media_directory.cleanup()
+
+    def test_document_url_is_protected_and_not_a_public_media_path(self):
+        from applications.serializers import DocumentSerializer
+
+        serialized = DocumentSerializer(self.document).data
+        self.assertEqual(serialized['file'], f'/api/documents/{self.document.pk}/file/')
+        self.assertNotIn('/media/', serialized['file'])
+
+    def test_citizen_can_view_own_document(self):
+        client = APIClient()
+        client.force_authenticate(user=self.citizen)
+
+        response = client.get(f'/api/documents/{self.document.pk}/file/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'image/png')
+        self.assertEqual(response['Cache-Control'], 'private, no-store')
+        try:
+            self.assertEqual(b''.join(response.streaming_content), b'\x89PNG\r\n\x1a\nprotected-cnic-data')
+        finally:
+            response.close()
+
+    def test_other_citizen_cannot_view_document(self):
+        client = APIClient()
+        client.force_authenticate(user=self.other_citizen)
+
+        response = client.get(f'/api/documents/{self.document.pk}/file/')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_authorized_staff_can_view_document(self):
+        client = APIClient()
+        client.force_authenticate(user=self.staff)
+
+        response = client.get(f'/api/documents/{self.document.pk}/file/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'image/png')
+        response.close()
+
+    def test_authority_and_super_admin_can_view_document(self):
+        admin = User.objects.create_user(
+            cnic='99999-1111111-1',
+            email='admin-docs@example.com',
+            password='Admin@1234',
+            full_name='Test Super Admin',
+            role='SUPER_ADMIN',
+        )
+        for user in (create_authority(), admin):
+            with self.subTest(role=user.role):
+                client = APIClient()
+                client.force_authenticate(user=user)
+
+                response = client.get(f'/api/documents/{self.document.pk}/file/')
+
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                response.close()
+
+    def test_anonymous_user_cannot_view_document(self):
+        response = APIClient().get(f'/api/documents/{self.document.pk}/file/')
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_legacy_media_path_is_also_protected(self):
+        client = APIClient()
+
+        response = client.get(f'/media/{self.document.file.name}')
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class CertificateLayoutTests(TestCase):
+    def test_citizen_fields_are_centered_and_use_larger_font(self):
+        from applications.certificate_service import CERTIFICATE_LAYOUT, draw_fitted_text
+
+        class RecordingCanvas:
+            def __init__(self):
+                self.font = None
+                self.drawn = None
+
+            def stringWidth(self, text, font_name, font_size):
+                return len(text) * font_size * 0.5
+
+            def setFont(self, font_name, font_size):
+                self.font = (font_name, font_size)
+
+            def setFillColorRGB(self, *color):
+                pass
+
+            def drawString(self, x, y, text):
+                self.drawn = (x, y, text)
+
+        pdf = RecordingCanvas()
+        scale = 72 / CERTIFICATE_LAYOUT['template_dpi']
+        field = CERTIFICATE_LAYOUT['fields']['name']
+        draw_fitted_text(pdf, 'Alexandra Long Citizen Name', field, 900, scale)
+
+        self.assertEqual(pdf.font[1], CERTIFICATE_LAYOUT['font_size'])
+        expected_x = field['x'] * scale + (
+            field['max_width'] * scale - pdf.stringWidth(
+                pdf.drawn[2], CERTIFICATE_LAYOUT['font_name'], pdf.font[1]
+            )
+        ) / 2
+        self.assertAlmostEqual(pdf.drawn[0], expected_x)
+        self.assertLessEqual(
+            pdf.stringWidth(pdf.drawn[2], CERTIFICATE_LAYOUT['font_name'], pdf.font[1]),
+            field['max_width'] * scale,
+        )
+
+    def test_certificate_pdf_renders_with_long_name_and_qr(self):
+        from PIL import Image
+        from applications.certificate_service import render_certificate_pdf
+
+        with tempfile.TemporaryDirectory() as directory:
+            template_path = f'{directory}\\certificate-template.png'
+            Image.new('RGB', (816, 1306), color='white').save(template_path)
+            for name in ('Ali Khan', 'Alexandra Elizabeth Montgomery-Cunningham'):
+                with self.subTest(name=name):
+                    pdf_bytes = render_certificate_pdf(
+                        template_path,
+                        {
+                            'name': name,
+                            'father_name': 'A Long Relationship Name',
+                            'cnic': '35202-1234567-9',
+                            'district': 'Rawalpindi',
+                            'province': 'Punjab',
+                            'certificate_no': 'CERT-2026-123456',
+                            'issue_date': '22 Oct 2026',
+                            'valid_until': '22 Apr 2027',
+                            'status': 'VALID',
+                        },
+                        'https://example.test/certificates/verify/CERT-2026-123456/',
+                    )
+
+                    self.assertTrue(pdf_bytes.startswith(b'%PDF'))
+                    self.assertIn(b'/XObject', pdf_bytes)
+
+
 class AuthorityDashboardApiTests(TestCase):
     def setUp(self):
         self.authority = create_authority()
@@ -1120,6 +1584,563 @@ class AuthorityDashboardApiTests(TestCase):
 
 
 # ─── Stage 6: Full Frontend & E2E Integration Audit Tests ─────────────────────
+class CertificateManagementTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.citizen = create_citizen_with_province(
+            cnic='42101-5555555-5',
+            email='certificate-owner@test.com',
+            full_name='Certificate Owner',
+            province='Sindh',
+            district='Karachi',
+        )
+        self.application = make_app_for_citizen(self.citizen, 'PAYMENT_VERIFIED')
+
+    def _create_certificate(self, application=None, certificate_number='CERT-2026-123456'):
+        return Certificate.objects.create(
+            application=application or self.application,
+            certificate_number=certificate_number,
+            validity_expiry=timezone.localdate() + timedelta(days=180),
+            qr_code_hash=f'qr-{certificate_number}',
+            digital_signature='test-signature',
+            verification_url=f'http://localhost:5173/verify/{certificate_number}',
+            pdf_file='certificates/test-certificate.pdf',
+            certificate_hash='a' * 64,
+        )
+
+    def test_certificate_management_search_and_detail_use_central_record(self):
+        certificate = self._create_certificate()
+        staff = create_staff()
+        self.client.force_authenticate(user=staff)
+
+        listing = self.client.get('/api/police/certificates/', {'search': 'CERT-2026-123'})
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertEqual(listing.data['count'], 1)
+        self.assertEqual(listing.data['results'][0]['certificate_number'], certificate.certificate_number)
+        self.assertEqual(listing.data['results'][0]['applicant']['cnic'], '42101-*******-5')
+
+        detail = self.client.get(f'/api/police/certificates/{certificate.certificate_number}/')
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail.data['application']['id'], self.application.pk)
+        self.assertEqual(
+            self.client.get('/api/police/certificates/CERT-2026-000000/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_certificate_management_denies_citizens_and_scopes_province_admin(self):
+        certificate = self._create_certificate()
+        other_citizen = create_citizen_with_province(
+            cnic='35202-6666666-6',
+            email='other-owner@test.com',
+            full_name='Other Certificate Owner',
+            province='Punjab',
+            district='Lahore',
+        )
+        other_application = make_app_for_citizen(other_citizen, 'COMPLETED')
+        other_certificate = self._create_certificate(
+            other_application,
+            certificate_number='CERT-2026-654321',
+        )
+
+        self.client.force_authenticate(user=self.citizen)
+        self.assertEqual(
+            self.client.get('/api/police/certificates/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        province_admin = User.objects.create_user(
+            cnic='35202-7777777-7',
+            email='province-admin@test.com',
+            password='Admin@1234',
+            full_name='Province Admin',
+            role='SUPER_ADMIN',
+            province='Sindh',
+        )
+        self.client.force_authenticate(user=province_admin)
+        listing = self.client.get('/api/police/certificates/')
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertEqual(listing.data['count'], 1)
+        self.assertEqual(listing.data['results'][0]['id'], certificate.pk)
+        self.assertEqual(
+            self.client.get(f'/api/police/certificates/{other_certificate.certificate_number}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    @patch('applications.certificate_service.render_certificate_pdf', return_value=b'%PDF-1.4 test certificate')
+    def test_generation_is_persisted_retrievable_and_idempotent(self, _render_pdf):
+        import hashlib
+        from applications.certificate_service import CertificateService
+        from blockchain.models import BlockchainBlock
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            partial_certificate = Certificate.objects.create(
+                application=self.application,
+                certificate_number='CERT-2026-555555',
+                validity_expiry=timezone.localdate() + timedelta(days=180),
+                qr_code_hash='incomplete-certificate-qr',
+                digital_signature='incomplete-signature',
+                verification_url='',
+            )
+            self.client.force_authenticate(user=create_staff())
+            incomplete_response = self.client.get(
+                f'/api/police/certificates/{partial_certificate.certificate_number}/'
+            )
+            self.assertEqual(incomplete_response.status_code, status.HTTP_409_CONFLICT)
+
+            certificate = CertificateService.generate_certificate(self.application)
+            self.assertEqual(certificate.pk, partial_certificate.pk)
+            self.assertEqual(certificate.certificate_number, partial_certificate.certificate_number)
+            self.assertTrue(Certificate.objects.filter(pk=certificate.pk).exists())
+            self.assertTrue(certificate.pdf_file)
+            self.assertTrue(certificate.certificate_hash)
+            with certificate.pdf_file.storage.open(certificate.pdf_file.name, 'rb') as stored_file:
+                stored_pdf = stored_file.read()
+            self.assertEqual(
+                hashlib.sha256(stored_pdf).hexdigest(),
+                certificate.certificate_hash,
+            )
+
+            second_result = CertificateService.generate_certificate(self.application)
+            self.assertEqual(second_result.pk, certificate.pk)
+            self.assertEqual(Certificate.objects.filter(application=self.application).count(), 1)
+            self.assertEqual(
+                BlockchainBlock.objects.filter(
+                    record_id=str(self.application.pk),
+                    action_type='CERTIFICATE_ISSUE',
+                ).count(),
+                1,
+            )
+
+            result = self.client.get(f'/api/police/certificates/{certificate.certificate_number}/')
+            self.assertEqual(result.status_code, status.HTTP_200_OK)
+            self.assertEqual(result.data['certificate_number'], certificate.certificate_number)
+            self.client.force_authenticate(user=self.citizen)
+            first_download = self.client.get(
+                f'/api/citizen/applications/{self.application.pk}/download-certificate/'
+            )
+            second_download = self.client.get(
+                f'/api/citizen/applications/{self.application.pk}/download-certificate/'
+            )
+            self.assertEqual(first_download.content, stored_pdf)
+            self.assertEqual(second_download.content, stored_pdf)
+
+    def test_integrity_verification_endpoint_uses_certificate_service(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from blockchain.service import BlockchainService
+
+        certificate = self._create_certificate()
+        block = BlockchainService.add_block(
+            'CERTIFICATE_ISSUE',
+            str(certificate.application_id),
+            self.citizen.cnic,
+            {
+                'certificate_number': certificate.certificate_number,
+                'certificate_hash': certificate.certificate_hash,
+            },
+        )
+        certificate.blockchain_transaction_hash = block.current_hash
+        certificate.save(update_fields=['blockchain_transaction_hash'])
+        self.client.force_authenticate(user=create_staff())
+        response = self.client.post(
+            '/api/staff/certificates/verify-integrity/',
+            {
+                'certificate_number': certificate.certificate_number,
+                'file': SimpleUploadedFile(
+                    'certificate.pdf',
+                    b'%PDF-1.4 uploaded document',
+                    content_type='application/pdf',
+                ),
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['state'], 'HASH_MISMATCH')
+
+    @patch(
+        'applications.certificate_service.render_certificate_pdf',
+        side_effect=RuntimeError('PDF rendering failed'),
+    )
+    def test_failed_generation_does_not_persist_partial_certificate(self, _render_pdf):
+        from applications.certificate_service import CertificateService
+
+        with self.assertRaisesRegex(RuntimeError, 'PDF rendering failed'):
+            CertificateService.generate_certificate(self.application)
+
+        self.assertFalse(Certificate.objects.filter(application=self.application).exists())
+        self.application.refresh_from_db()
+        self.assertEqual(self.application.status, 'PAYMENT_VERIFIED')
+
+    def test_rejected_application_cannot_generate_certificate(self):
+        from applications.certificate_service import CertificateService
+
+        self.application.status = 'AUTHORITY_REJECTED'
+        self.application.save(update_fields=['status'])
+        with self.assertRaisesRegex(ValueError, 'AUTHORITY_REJECTED'):
+            CertificateService.generate_certificate(self.application)
+        self.assertFalse(Certificate.objects.filter(application=self.application).exists())
+
+    @patch(
+        'applications.certificate_service.BlockchainService.verify_chain',
+        return_value={'valid': False, 'issues': ['historical block hash mismatch']},
+    )
+    def test_invalid_ledger_blocks_new_issuance_without_partial_records(self, _verify_chain):
+        from applications.certificate_service import CertificateService
+
+        with self.assertRaisesRegex(RuntimeError, 'existing ledger is invalid'):
+            CertificateService.generate_certificate(self.application)
+
+        self.assertFalse(Certificate.objects.filter(application=self.application).exists())
+        self.application.refresh_from_db()
+        self.assertEqual(self.application.status, 'PAYMENT_VERIFIED')
+
+
+class CertificateIntegrityVerificationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.media_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.media_directory.cleanup)
+        self.media_settings = override_settings(MEDIA_ROOT=self.media_directory.name)
+        self.media_settings.enable()
+        self.addCleanup(self.media_settings.disable)
+
+        self.citizen = create_citizen_with_province(
+            cnic='42101-8888888-8',
+            email='integrity-owner@test.com',
+            full_name='Integrity Owner',
+            province='Sindh',
+            district='Karachi',
+        )
+        self.application = make_app_for_citizen(self.citizen, 'COMPLETED')
+        self.staff = create_staff(
+            cnic='00000-8888888-8',
+            email='integrity-staff@test.com',
+        )
+        self.pdf_bytes = self._create_pdf('Trusted certificate')
+
+    @staticmethod
+    def _create_pdf(text, color=(0, 0, 0)):
+        from io import BytesIO
+        from reportlab.lib.colors import Color
+        from reportlab.pdfgen import canvas
+
+        output = BytesIO()
+        pdf = canvas.Canvas(output)
+        pdf.setFillColor(Color(*color))
+        pdf.drawString(72, 720, text)
+        pdf.save()
+        return output.getvalue()
+
+    def _issue_certificate(
+        self,
+        certificate_number='CERT-2026-765432',
+        pdf_bytes=None,
+        application=None,
+        validity_expiry=None,
+        certificate_status='VALID',
+        add_issue_event=True,
+    ):
+        from django.core.files.base import ContentFile
+        from blockchain.service import BlockchainService
+        import hashlib
+
+        application = application or self.application
+        pdf_bytes = pdf_bytes or self.pdf_bytes
+        certificate = Certificate.objects.create(
+            application=application,
+            certificate_number=certificate_number,
+            validity_expiry=validity_expiry or timezone.localdate() + timedelta(days=90),
+            qr_code_hash=f'qr-{certificate_number}',
+            digital_signature='test-signature',
+            verification_url=f'http://localhost:5173/verify/{certificate_number}',
+            status=certificate_status,
+            certificate_hash=hashlib.sha256(pdf_bytes).hexdigest(),
+        )
+        certificate.pdf_file.save(
+            f'{certificate_number}.pdf',
+            ContentFile(pdf_bytes),
+            save=True,
+        )
+        if add_issue_event:
+            block = BlockchainService.add_block(
+                'CERTIFICATE_ISSUE',
+                str(application.pk),
+                application.applicant.cnic,
+                {
+                    'certificate_number': certificate.certificate_number,
+                    'certificate_hash': certificate.certificate_hash,
+                },
+            )
+            certificate.blockchain_transaction_hash = block.current_hash
+            certificate.save(update_fields=['blockchain_transaction_hash'])
+        return certificate
+
+    def _verify(self, certificate_reference, pdf_bytes, user=None):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        self.client.force_authenticate(user=user or self.staff)
+        return self.client.post(
+            '/api/staff/certificates/verify-integrity/',
+            {
+                'certificate_number': certificate_reference,
+                'file': SimpleUploadedFile(
+                    'citizen-certificate.pdf',
+                    pdf_bytes,
+                    content_type='application/pdf',
+                ),
+            },
+            format='multipart',
+        )
+
+    def test_exact_pdf_download_verifies_by_certificate_number_and_qr_url(self):
+        certificate = self._issue_certificate()
+        self.client.force_authenticate(user=self.citizen)
+        download = self.client.get(
+            f'/api/citizen/applications/{self.application.pk}/download-certificate/'
+        )
+        self.assertEqual(download.status_code, status.HTTP_200_OK)
+        self.assertEqual(download.content, self.pdf_bytes)
+
+        by_number = self._verify(certificate.certificate_number, download.content)
+        self.assertEqual(by_number.data['state'], 'INTEGRITY_VERIFIED')
+        self.assertTrue(by_number.data['integrity_valid'])
+        self.assertEqual(by_number.data['hash_match'], 'MATCH')
+        self.assertEqual(by_number.data['pdf_integrity'], 'UNMODIFIED')
+        self.assertTrue(by_number.data['ledger_valid'])
+        self.assertEqual(
+            by_number.data['issuance_event']['certificate_number'],
+            certificate.certificate_number,
+        )
+        self.assertTrue(by_number.data['audit_recorded'])
+
+        by_qr_url = self._verify(certificate.verification_url, download.content)
+        self.assertEqual(by_qr_url.data['certificate_number'], certificate.certificate_number)
+        self.assertEqual(by_qr_url.data['state'], 'INTEGRITY_VERIFIED')
+
+    def test_changed_and_other_certificate_pdfs_are_hash_mismatches(self):
+        first = self._issue_certificate()
+        second_application = make_app_for_citizen(
+            create_citizen_with_province(
+                cnic='42101-9999999-9',
+                email='second-integrity-owner@test.com',
+                full_name='Second Owner',
+                province='Sindh',
+                district='Karachi',
+            ),
+            'COMPLETED',
+        )
+        second = self._issue_certificate(
+            certificate_number='CERT-2026-765433',
+            pdf_bytes=self._create_pdf('Another certificate'),
+            application=second_application,
+        )
+
+        changed_text = self._verify(
+            first.certificate_number,
+            self._create_pdf('Tampered certificate text'),
+        )
+        changed_visual = self._verify(
+            first.certificate_number,
+            self._create_pdf('Trusted certificate', color=(1, 0, 0)),
+        )
+        other_pdf = self._verify(
+            first.certificate_number,
+            self._create_pdf('Another certificate'),
+        )
+        self.assertEqual(changed_text.data['state'], 'HASH_MISMATCH')
+        self.assertEqual(changed_text.data['hash_match'], 'MISMATCH')
+        self.assertEqual(changed_text.data['pdf_integrity'], 'TAMPERED')
+        self.assertEqual(changed_visual.data['state'], 'HASH_MISMATCH')
+        self.assertEqual(other_pdf.data['state'], 'HASH_MISMATCH')
+        first.refresh_from_db()
+        self.assertEqual(first.certificate_hash, hashlib.sha256(self.pdf_bytes).hexdigest())
+
+    def test_missing_record_missing_hash_invalid_file_and_size_limit(self):
+        certificate = self._issue_certificate(add_issue_event=False)
+        certificate.certificate_hash = None
+        certificate.save(update_fields=['certificate_hash'])
+        missing_hash = self._verify('CERT-2026-000001', self.pdf_bytes)
+        self.assertEqual(missing_hash.data['state'], 'NO_CERTIFICATE_RECORD')
+        no_hash = self._verify('CERT-2026-765432', self.pdf_bytes)
+        self.assertEqual(no_hash.data['state'], 'VERIFICATION_UNAVAILABLE')
+        self.assertEqual(no_hash.data['ledger_status'], 'VALID')
+        self.assertEqual(no_hash.data['hash_match'], 'NOT_DETERMINED')
+        self.assertIn('No certificate issuance event', no_hash.data['diagnostic'])
+        invalid = self._verify('CERT-2026-765432', b'not a PDF')
+        self.assertEqual(invalid.data['state'], 'INVALID_FILE')
+        oversized = self._verify('CERT-2026-765432', b'%PDF-' + b'x' * (10 * 1024 * 1024))
+        self.assertEqual(oversized.data['state'], 'INVALID_FILE')
+
+    def test_missing_stored_pdf_returns_unavailable_without_regenerating_it(self):
+        certificate = self._issue_certificate()
+        certificate.pdf_file.storage.delete(certificate.pdf_file.name)
+        self.client.force_authenticate(user=self.citizen)
+
+        response = self.client.get(
+            f'/api/citizen/applications/{self.application.pk}/download-certificate/'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data['status'], 'PDF_UNAVAILABLE')
+        certificate.refresh_from_db()
+        self.assertEqual(certificate.certificate_hash, hashlib.sha256(self.pdf_bytes).hexdigest())
+
+    def test_missing_issuance_event_is_not_fabricated_by_a_generation_retry(self):
+        from applications.certificate_service import CertificateService
+
+        certificate = self._issue_certificate(add_issue_event=False)
+        original_file_name = certificate.pdf_file.name
+
+        with self.assertRaisesRegex(RuntimeError, 'will not be fabricated'):
+            CertificateService.generate_certificate(self.application)
+
+        certificate.refresh_from_db()
+        self.assertEqual(certificate.pdf_file.name, original_file_name)
+        self.assertEqual(certificate.certificate_hash, hashlib.sha256(self.pdf_bytes).hexdigest())
+
+    def test_integrity_and_revoked_or_expired_certificate_status_are_separate(self):
+        revoked = self._issue_certificate(certificate_status='REVOKED')
+        revoked_result = self._verify(revoked.certificate_number, self.pdf_bytes)
+        self.assertEqual(revoked_result.data['state'], 'INTEGRITY_VERIFIED')
+        self.assertTrue(revoked_result.data['integrity_valid'])
+        self.assertEqual(revoked_result.data['certificate_status'], 'REVOKED')
+        self.assertFalse(revoked_result.data['valid'])
+
+        expired_owner = create_citizen_with_province(
+            cnic='42101-7777777-7',
+            email='expired-integrity-owner@test.com',
+            full_name='Expired Owner',
+            province='Sindh',
+            district='Karachi',
+        )
+        expired_application = make_app_for_citizen(expired_owner, 'COMPLETED')
+        expired = self._issue_certificate(
+            certificate_number='CERT-2026-765433',
+            application=expired_application,
+            validity_expiry=timezone.localdate() - timedelta(days=1),
+        )
+        expired_result = self._verify(expired.certificate_number, self.pdf_bytes)
+        self.assertEqual(expired_result.data['state'], 'INTEGRITY_VERIFIED')
+        self.assertEqual(expired_result.data['certificate_status'], 'EXPIRED')
+
+    @patch(
+        'applications.certificate_service.BlockchainService.verify_chain',
+        return_value={'valid': False, 'issues': ['test failure']},
+    )
+    def test_invalid_ledger_fails_closed(self, _verify_chain):
+        certificate = self._issue_certificate()
+        response = self._verify(certificate.certificate_number, self.pdf_bytes)
+        self.assertEqual(response.data['state'], 'VERIFICATION_UNAVAILABLE')
+        self.assertIsNone(response.data['integrity_valid'])
+        self.assertEqual(response.data['original_hash'], certificate.certificate_hash)
+        self.assertEqual(response.data['uploaded_hash'], certificate.certificate_hash)
+        self.assertEqual(response.data['hash_match'], 'MATCH')
+        self.assertEqual(response.data['pdf_integrity'], 'UNVERIFIED')
+        self.assertFalse(response.data['ledger_valid'])
+        self.assertIsNotNone(response.data['issuance_event'])
+
+    def test_invalid_block_hash_is_reported_without_rewriting_the_event(self):
+        from blockchain.models import BlockchainBlock
+
+        certificate = self._issue_certificate()
+        issue_block = BlockchainBlock.objects.get(
+            record_id=str(certificate.application_id),
+            action_type='CERTIFICATE_ISSUE',
+        )
+        preceding_block = BlockchainBlock.objects.exclude(pk=issue_block.pk).order_by('block_index').first()
+        BlockchainBlock.objects.filter(pk=preceding_block.pk).update(
+            current_hash='f' * 64,
+        )
+
+        response = self._verify(certificate.certificate_number, self.pdf_bytes)
+        self.assertEqual(response.data['state'], 'VERIFICATION_UNAVAILABLE')
+        self.assertEqual(response.data['original_hash'], certificate.certificate_hash)
+        self.assertFalse(response.data['ledger_valid'])
+        self.assertTrue(any(
+            'current_hash mismatch' in issue
+            for issue in response.data['ledger_issues']
+        ))
+        issue_block.refresh_from_db()
+        self.assertEqual(issue_block.current_hash, certificate.blockchain_transaction_hash)
+
+    def test_broken_previous_hash_is_reported_without_rewriting_history(self):
+        from blockchain.models import BlockchainBlock
+
+        certificate = self._issue_certificate()
+        issue_block = BlockchainBlock.objects.get(
+            record_id=str(certificate.application_id),
+            action_type='CERTIFICATE_ISSUE',
+        )
+        previous_hash = issue_block.previous_hash
+        BlockchainBlock.objects.filter(pk=issue_block.pk).update(
+            previous_hash='f' * 64,
+        )
+
+        response = self._verify(certificate.certificate_number, self.pdf_bytes)
+        self.assertEqual(response.data['state'], 'VERIFICATION_UNAVAILABLE')
+        self.assertFalse(response.data['ledger_valid'])
+        self.assertTrue(any(
+            'broken chain link' in issue
+            for issue in response.data['ledger_issues']
+        ))
+        issue_block.refresh_from_db()
+        self.assertNotEqual(issue_block.previous_hash, previous_hash)
+
+    def test_legacy_timestamp_skew_is_validated_without_rewriting_event(self):
+        from datetime import timedelta
+        from blockchain.models import BlockchainBlock
+        from blockchain.service import BlockchainService
+
+        certificate = self._issue_certificate()
+        issue_block = BlockchainBlock.objects.get(
+            record_id=str(certificate.application_id),
+            action_type='CERTIFICATE_ISSUE',
+        )
+        legacy_hash = BlockchainService._compute_block_hash(
+            issue_block.block_index,
+            str(issue_block.timestamp - timedelta(microseconds=1200)),
+            issue_block.previous_hash,
+            issue_block.data_hash,
+            issue_block.action_type,
+            issue_block.nonce,
+        )
+        BlockchainBlock.objects.filter(pk=issue_block.pk).update(current_hash=legacy_hash)
+
+        chain = BlockchainService.verify_chain()
+
+        self.assertTrue(chain['valid'], chain['issues'])
+        issue_block.refresh_from_db()
+        self.assertEqual(issue_block.current_hash, legacy_hash)
+
+    def test_audit_append_failure_is_reported_without_claiming_it_was_recorded(self):
+        from unittest.mock import patch
+
+        certificate = self._issue_certificate()
+        with patch(
+            'applications.views.BlockchainService.add_block',
+            side_effect=RuntimeError('audit storage unavailable'),
+        ):
+            response = self._verify(certificate.certificate_number, self.pdf_bytes)
+        self.assertEqual(response.data['state'], 'INTEGRITY_VERIFIED')
+        self.assertTrue(response.data['integrity_valid'])
+        self.assertFalse(response.data['audit_recorded'])
+        self.assertIn('could not be recorded', response.data['audit_message'])
+
+    def test_citizen_is_not_authorized_to_run_integrity_verification(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        self.client.force_authenticate(user=self.citizen)
+        response = self.client.post(
+            '/api/staff/certificates/verify-integrity/',
+            {
+                'certificate_number': 'CERT-2026-765432',
+                'file': SimpleUploadedFile('certificate.pdf', self.pdf_bytes),
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ─── Stage 6: Full Frontend & E2E Integration Audit Tests ─────────────────────
 class Stage6IntegrationTests(TestCase):
     """
     Validates Stage 6 End-to-End Workflow:
@@ -1149,7 +2170,7 @@ class Stage6IntegrationTests(TestCase):
         # Staff User
         self.staff = User.objects.create_user(
             cnic='35202-3333333-3', email='staff_officer@test.com',
-            password='Staff@1234', full_name='Staff Officer',
+            password='TestStaffPass!456', full_name='Staff Officer',
             role='POLICE_STAFF'
         )
 
@@ -1277,6 +2298,8 @@ class Stage6IntegrationTests(TestCase):
         self.assertEqual(app.status, 'COMPLETED')
         self.assertTrue(Certificate.objects.filter(application=app).exists())
         cert_a = Certificate.objects.get(application=app)
+        self.assertEqual(res_verify_pay.data['status'], 'COMPLETED')
+        self.assertEqual(res_verify_pay.data['certificate_number'], cert_a.certificate_number)
 
         # 9. Public QR Scan Verification Check
         self.client.force_authenticate(user=None)
@@ -1286,6 +2309,7 @@ class Stage6IntegrationTests(TestCase):
         self.assertEqual(res_qr.data['cnic'], '42101-*******-1')
         self.assertEqual(res_qr.data['province'], 'Sindh')
         self.assertEqual(res_qr.data['authority'], 'Sindh Police')
+        self.assertTrue(res_qr.data['blockchain_verified'])
 
     def test_e2e_full_workflow_citizen_punjab(self):
         """End-to-end test for Citizen B (Punjab / Lahore)."""

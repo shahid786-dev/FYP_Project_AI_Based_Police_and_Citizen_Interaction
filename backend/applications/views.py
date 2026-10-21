@@ -1,12 +1,16 @@
 from rest_framework import status, permissions, generics
+from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from django.http import HttpResponse
+from django.http import FileResponse, HttpResponse
 from django.db.models import Count, Sum, Q
 import requests, datetime, io, uuid, qrcode
+import json
 import logging
+import mimetypes
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +20,10 @@ from reportlab.lib import colors
 from reportlab.lib.units import inch
 
 from .models import Application, Document, Challan, Certificate, Payment
-from .serializers import ApplicationSerializer, ApplicationCreateSerializer, DocumentSerializer
+from .serializers import (
+    ApplicationSerializer, ApplicationCreateSerializer, DocumentSerializer,
+    CertificateManagementSerializer,
+)
 
 from blockchain.service import BlockchainService
 from notifications.service import (
@@ -38,6 +45,103 @@ class StaffWorkflowPermission(permissions.BasePermission):
             bool(request.user and request.user.is_authenticated)
             and request.user.role in self.allowed_roles
         )
+
+
+class PublicPortalStatsView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        verified_citizens = Application.objects.filter(
+            status='COMPLETED',
+            certificate__pdf_file__gt='',
+            certificate__certificate_hash__gt='',
+        ).values('applicant_id').distinct().count()
+        return Response({'verified_citizens': verified_citizens})
+
+
+class CertificateManagementPagination(LimitOffsetPagination):
+    default_limit = 20
+    max_limit = 100
+
+
+class CertificateManagementQueryset:
+    allowed_roles = {'POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN'}
+
+    @classmethod
+    def for_user(cls, user):
+        if user.role not in cls.allowed_roles:
+            return Certificate.objects.none()
+
+        queryset = Certificate.objects.select_related(
+            'application__applicant',
+            'application__staff_reviewed_by',
+            'application__admin_decided_by',
+            'application__payment_record',
+        )
+        if user.role == 'SUPER_ADMIN' and user.province:
+            queryset = queryset.filter(
+                Q(application__applicant_province=user.province)
+                | Q(application__applicant__province=user.province)
+            )
+        return queryset
+
+
+class CertificateManagementListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = CertificateManagementPagination
+
+    def get(self, request):
+        if request.user.role not in CertificateManagementQueryset.allowed_roles:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        queryset = CertificateManagementQueryset.for_user(request.user)
+        queryset = queryset.exclude(
+            pdf_file=''
+        ).exclude(
+            pdf_file__isnull=True
+        ).exclude(
+            certificate_hash=''
+        ).exclude(
+            certificate_hash__isnull=True
+        )
+        search = request.query_params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(certificate_number__icontains=search)
+                | Q(application__tracking_id__icontains=search)
+                | Q(application__applicant__full_name__icontains=search)
+                | Q(application__applicant__cnic__icontains=search)
+            )
+        queryset = queryset.order_by('-issue_date', '-pk')
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = CertificateManagementSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class CertificateManagementDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, certificate_number):
+        if request.user.role not in CertificateManagementQueryset.allowed_roles:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_403_FORBIDDEN)
+        certificate = CertificateManagementQueryset.for_user(request.user).filter(
+            certificate_number=certificate_number
+        ).first()
+        if certificate is None:
+            return Response(
+                {'error': 'Certificate not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if not certificate.pdf_file or not certificate.certificate_hash:
+            return Response(
+                {
+                    'error': 'This certificate record exists, but issuance is incomplete. Retry certificate generation.',
+                    'status': 'ISSUANCE_INCOMPLETE',
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(CertificateManagementSerializer(certificate).data)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -118,6 +222,64 @@ class ApplicationDetailView(generics.RetrieveAPIView):
         if user.role in ['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']:
             return Application.objects.all()
         return Application.objects.filter(applicant=user)
+
+
+def _can_view_application_document(user, document):
+    if user.role == 'CITIZEN':
+        return document.application.applicant_id == user.pk
+    return user.role in StaffWorkflowPermission.allowed_roles
+
+
+def _document_file_response(document):
+    filename = os.path.basename(document.file.name)
+    guessed_type, _ = mimetypes.guess_type(filename)
+    inline_types = {
+        'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp',
+        'application/pdf',
+    }
+    content_type = guessed_type if guessed_type in inline_types else 'application/octet-stream'
+    response = FileResponse(
+        document.file.open('rb'),
+        as_attachment=content_type not in inline_types,
+        filename=filename,
+        content_type=content_type,
+    )
+    response['Cache-Control'] = 'private, no-store'
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
+class DocumentFileView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            document = Document.objects.select_related(
+                'application__applicant'
+            ).get(pk=pk)
+        except Document.DoesNotExist:
+            return Response({'error': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _can_view_application_document(request.user, document):
+            return Response({'error': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return _document_file_response(document)
+
+
+class ProtectedDocumentMediaView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, filename):
+        storage_name = f'application_docs/{filename}'
+        try:
+            document = Document.objects.select_related(
+                'application__applicant'
+            ).get(file=storage_name)
+        except Document.DoesNotExist:
+            return Response({'error': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _can_view_application_document(request.user, document):
+            return Response({'error': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return _document_file_response(document)
 
 
 class StaffApplicationQueueView(generics.ListAPIView):
@@ -638,6 +800,139 @@ class AuthorityDecisionView(APIView):
         return Response({'message': f'Application {decision}D.', 'status': application.status})
 
 
+class CertificateIntegrityVerificationView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role not in ['POLICE_STAFF', 'POLICE_AUTHORITY', 'SUPER_ADMIN']:
+            return Response({'error': 'Unauthorized'}, status=403)
+
+        certificate_number = (
+            request.data.get('certificate_number')
+            or request.data.get('certificate_id')
+            or request.data.get('certificate')
+            or request.data.get('qr_code_hash')
+        )
+        uploaded_file = request.FILES.get('file') or request.FILES.get('pdf_file')
+        from applications.certificate_service import CertificateService
+
+        if not certificate_number:
+            normalized_reference = None
+        else:
+            normalized_reference = CertificateService.normalize_certificate_reference(
+                certificate_number
+            )
+
+        cert = None
+        ambiguous_reference = False
+        if normalized_reference:
+            matches = CertificateManagementQueryset.for_user(request.user).filter(
+                Q(certificate_number__iexact=normalized_reference)
+                | Q(qr_code_hash__iexact=normalized_reference)
+            ).distinct()
+            match_count = matches.count()
+            if match_count == 1:
+                cert = matches.first()
+            elif match_count > 1:
+                ambiguous_reference = True
+
+        result = CertificateService.evaluate_uploaded_pdf(cert, uploaded_file)
+        if ambiguous_reference and result.get('state') != 'INVALID_FILE':
+            result = {
+                'state': 'VERIFICATION_UNAVAILABLE',
+                'status': 'VERIFICATION_UNAVAILABLE',
+                'valid': False,
+                'integrity_valid': None,
+                'pdf_integrity': 'UNVERIFIED',
+                'hash_match': 'NOT_DETERMINED',
+                'ledger_valid': None,
+                'ledger_status': 'NOT_CHECKED',
+                'ledger_issues': [],
+                'issuance_event': None,
+                'diagnostic': 'The supplied reference matches more than one certificate record.',
+                'message': 'The supplied reference matches more than one certificate record.',
+                'original_hash': None,
+                'uploaded_hash': result.get('uploaded_hash'),
+            }
+
+        expired = bool(
+            cert
+            and cert.validity_expiry
+            and cert.validity_expiry < timezone.localdate()
+        )
+        certificate_status = None
+        certificate_state = None
+        if cert:
+            certificate_status = (
+                'REVOKED' if cert.status == 'REVOKED'
+                else 'EXPIRED' if expired or cert.status == 'EXPIRED'
+                else cert.status
+            )
+            certificate_state = {
+                'REVOKED': 'CERTIFICATE_REVOKED',
+                'EXPIRED': 'CERTIFICATE_EXPIRED',
+            }.get(certificate_status, 'CERTIFICATE_ACTIVE')
+
+        event_payload = {
+            'certificate_number': cert.certificate_number if cert else None,
+            'certificate_reference': normalized_reference,
+            'state': result.get('state', 'VERIFICATION_UNAVAILABLE'),
+            'integrity_valid': result.get('integrity_valid'),
+            'pdf_integrity': result.get('pdf_integrity', 'NOT_DETERMINED'),
+            'hash_match': result.get('hash_match', 'NOT_DETERMINED'),
+            'ledger_valid': result.get('ledger_valid'),
+            'original_hash': result.get('original_hash'),
+            'uploaded_hash': result.get('uploaded_hash'),
+            'issuance_event': result.get('issuance_event'),
+            'verified_by_role': request.user.role,
+        }
+
+        audit_recorded = False
+        audit_error = None
+        try:
+            block = BlockchainService.add_block(
+                'RECORD_MODIFY',
+                str(cert.application_id) if cert else 'CERTIFICATE_LOOKUP',
+                str(request.user.cnic),
+                event_payload,
+            )
+            audit_recorded = block is not None
+            if not audit_recorded:
+                audit_error = 'The verification result was produced, but the audit event was not recorded.'
+                logger.error('Certificate integrity audit append returned no block.')
+        except Exception:
+            audit_error = 'The verification result was produced, but the audit event could not be recorded.'
+            logger.exception('Could not append certificate integrity audit event.')
+
+        response = {
+            'certificate_number': cert.certificate_number if cert else None,
+            'certificate_reference': normalized_reference,
+            'status': result.get('status', 'VERIFICATION_UNAVAILABLE'),
+            'state': result.get('state', 'VERIFICATION_UNAVAILABLE'),
+            'valid': bool(result.get('integrity_valid') is True and certificate_status == 'VALID'),
+            'integrity_valid': result.get('integrity_valid'),
+            'pdf_integrity': result.get('pdf_integrity', 'NOT_DETERMINED'),
+            'hash_match': result.get('hash_match', 'NOT_DETERMINED'),
+            'ledger_valid': result.get('ledger_valid'),
+            'ledger_status': result.get('ledger_status', 'NOT_CHECKED'),
+            'ledger_issues': result.get('ledger_issues', []),
+            'trusted_hash_validated': bool(
+                result.get('ledger_valid') is True and result.get('original_hash')
+            ),
+            'message': result.get('message', 'Verification unavailable.'),
+            'diagnostic': result.get('diagnostic'),
+            'original_hash': result.get('original_hash'),
+            'uploaded_hash': result.get('uploaded_hash'),
+            'issuance_event': result.get('issuance_event'),
+            'certificate_status': certificate_status,
+            'certificate_state': certificate_state,
+            'expired': expired,
+            'verified_at': timezone.now().isoformat(),
+            'audit_recorded': audit_recorded,
+            'audit_message': audit_error,
+        }
+        return Response(response)
+
 
 # ─── Issue Certificate (after payment verified) ────────────────────────────
 
@@ -743,6 +1038,9 @@ class StaffListCreateView(APIView):
     def post(self, request):
         if request.user.role not in ['POLICE_AUTHORITY', 'SUPER_ADMIN']:
             return Response({'error': 'Unauthorized'}, status=403)
+        password = request.data.get('password')
+        if not isinstance(password, str) or not password.strip():
+            return Response({'password': 'A password is required.'}, status=400)
         from users.serializers import UserSerializer
         serializer = UserSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -750,7 +1048,7 @@ class StaffListCreateView(APIView):
         # Explicitly set role to POLICE_STAFF — UserSerializer has role as read_only
         # so setting it in data dict is silently ignored by the serializer
         user.role = 'POLICE_STAFF'
-        user.set_password(request.data.get('password', 'Staff@1234'))
+        user.set_password(password)
         user.save()
 
         # Generate a one-time OTP so the new staff officer can log in immediately
@@ -820,7 +1118,9 @@ class StaffResetPasswordView(APIView):
             staff = User.objects.get(pk=pk, role='POLICE_STAFF')
         except User.DoesNotExist:
             return Response({'error': 'Staff not found'}, status=404)
-        new_pwd = request.data.get('password', 'Staff@1234')
+        new_pwd = request.data.get('password')
+        if not isinstance(new_pwd, str) or not new_pwd.strip():
+            return Response({'password': 'A password is required.'}, status=400)
         staff.set_password(new_pwd)
         staff.save()
         return Response({'message': 'Password reset successfully.'})
@@ -852,17 +1152,51 @@ class PublicCertificateVerifyView(APIView):
         district = getattr(applicant, 'district', None) or None
 
         # Dynamic authority name based on actual province
-        from applications.certificate_service import get_authority_name
+        from applications.certificate_service import CertificateService, get_authority_name
         authority = get_authority_name(province) if province else 'Pakistan Police'
 
-        # Fetch blockchain hash for this application
+        # A ledger row alone is not proof that the hash chain or certificate
+        # issue payload is valid.
         from blockchain.models import BlockchainBlock
         bc_block = BlockchainBlock.objects.filter(
             record_id=str(application.id), action_type='CERTIFICATE_ISSUE'
-        ).first()
+        ).order_by('-block_index').first()
+        blockchain_status = 'NO_ISSUE_RECORD'
+        blockchain_verified = False
+        if bc_block:
+            try:
+                chain_status = BlockchainService.verify_chain()
+                payload = json.loads(bc_block.payload_json or '{}')
+                record_matches = (
+                    payload.get('certificate_number') == cert.certificate_number
+                    and payload.get('certificate_hash') == cert.certificate_hash
+                    and (
+                        not cert.blockchain_transaction_hash
+                        or cert.blockchain_transaction_hash == bc_block.current_hash
+                    )
+                )
+                blockchain_verified = bool(chain_status.get('valid') and record_matches)
+                blockchain_status = 'VERIFIED' if blockchain_verified else 'INVALID'
+            except (TypeError, ValueError):
+                blockchain_status = 'INVALID'
+            except Exception:
+                logger.exception(
+                    'Blockchain verification failed for certificate %s.',
+                    cert.certificate_number,
+                )
+                blockchain_status = 'UNAVAILABLE'
+
+        integrity = CertificateService.verify_certificate_integrity(cert)
+        is_expired = cert.validity_expiry < timezone.localdate()
+        is_valid = (
+            cert.status == 'VALID'
+            and not is_expired
+            and integrity['integrity_valid']
+            and blockchain_verified
+        )
 
         return Response({
-            'valid':               cert.status == 'VALID' and cert.validity_expiry >= timezone.localdate(),
+            'valid':               is_valid,
             'certificate_number':  cert.certificate_number,
             'applicant_name':      applicant.full_name,
             'cnic':                masked_cnic,
@@ -872,8 +1206,15 @@ class PublicCertificateVerifyView(APIView):
             'issue_date':          cert.issue_date,
             'expiry_date':         cert.validity_expiry,
             'status':              cert.status,
+            'certificate_status':  integrity['certificate_status'],
+            'integrity_valid':     integrity['integrity_valid'],
+            'integrity_reason':    integrity['reason'],
+            'original_hash':       integrity['original_hash'],
+            'current_hash':        integrity['current_hash'],
+            'expired':             is_expired,
             'blockchain_hash':     bc_block.current_hash if bc_block else None,
-            'blockchain_verified': bc_block is not None,
+            'blockchain_verified': blockchain_verified,
+            'blockchain_status':   blockchain_status,
         })
 
 
@@ -892,10 +1233,43 @@ class DownloadCertificatePDFView(APIView):
         if request.user != application.applicant and request.user.role not in ['POLICE_STAFF','POLICE_AUTHORITY','SUPER_ADMIN']:
             return Response({'error': 'Unauthorized'}, status=403)
 
-        if not cert.pdf_file:
-            return Response({'error': 'Certificate file not generated properly.'}, status=404)
+        if not cert.pdf_file or not cert.pdf_file.name:
+            return Response(
+                {
+                    'error': 'The issued certificate PDF is unavailable.',
+                    'status': 'PDF_UNAVAILABLE',
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
+        try:
+            with cert.pdf_file.storage.open(cert.pdf_file.name, 'rb') as issued_pdf:
+                pdf_bytes = issued_pdf.read()
+        except FileNotFoundError:
+            logger.exception(
+                'Stored PDF for certificate %s is missing.',
+                cert.certificate_number,
+            )
+            return Response(
+                {
+                    'error': 'The stored certificate PDF is missing and requires safe recovery.',
+                    'status': 'PDF_UNAVAILABLE',
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception:
+            logger.exception(
+                'Could not read stored PDF for certificate %s.',
+                cert.certificate_number,
+            )
+            return Response(
+                {
+                    'error': 'The stored certificate PDF could not be read.',
+                    'status': 'PDF_UNAVAILABLE',
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
-        response = HttpResponse(cert.pdf_file.read(), content_type='application/pdf')
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="PakVerify_Cert_{cert.certificate_number}.pdf"'
         return response

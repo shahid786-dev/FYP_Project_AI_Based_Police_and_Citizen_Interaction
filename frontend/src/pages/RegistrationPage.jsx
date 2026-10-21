@@ -61,6 +61,7 @@ export default function RegistrationPage() {
         father_name: form.fatherName,
         dob: form.dob || null,
         gender: form.gender.toUpperCase(),
+        address: form.address,
         district: form.city,
         province: form.province,
         mobile_number: form.phone,
